@@ -176,3 +176,20 @@ async def test_push_mode_uses_heartbeats(env):
     m.hb_last_at -= 31  # стук застарів
     await m.run_check()
     assert m.debouncer.confirmed == PowerState.OFF
+
+
+async def test_svitlobot_pings_can_be_disabled(env):
+    m, net, sent_tg, sent_svb, _, store = env
+    assert store.settings.svitlobot_enabled and store.settings.tg_enabled  # типово обидві функції увімкнені
+    await m.run_check()
+    await m.run_svitlobot_ping()
+    assert len(sent_svb) == 1
+
+    store.update({"svitlobot_enabled": False})
+    await m.run_svitlobot_ping()
+    assert len(sent_svb) == 1  # вимкнено — пінгів немає
+    assert m.status()["svitlobot"]["switch"] is False
+
+    store.update({"svitlobot_enabled": True})
+    await m.run_svitlobot_ping()
+    assert len(sent_svb) == 2

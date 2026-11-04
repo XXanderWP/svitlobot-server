@@ -21,7 +21,17 @@ if ! docker compose version >/dev/null 2>&1; then
   echo "::error::На сервері немає Docker Compose v2 (команда «docker compose»)"
   exit 1
 fi
+if ! docker info >/dev/null 2>&1; then
+  echo "::error::Користувач не має доступу до Docker. Додайте його до групи docker: sudo usermod -aG docker \$USER (і перезайдіть)"
+  exit 1
+fi
 
+# Перше розгортання: тека проєкту (разом із батьківськими) створюється автоматично.
+if [ -d "$DIR" ]; then
+  echo "• Оновлення наявного розгортання"
+else
+  echo "• Перше розгортання: створюю теку проєкту"
+fi
 mkdir -p "$DIR/data"
 chmod 700 "$DIR/data"
 

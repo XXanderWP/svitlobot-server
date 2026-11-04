@@ -541,6 +541,8 @@ class Monitor:
             },
             "svitlobot": {
                 "enabled": s.svitlobot_enabled and bool(s.svitlobot_key),
+                "switch": s.svitlobot_enabled,
+                "key_set": bool(s.svitlobot_key),
                 "active": self.svb_active,
                 "last_time": _fmt_ts(self.svb_last_at),
                 "last_ok": self.svb_last_ok,
@@ -548,6 +550,8 @@ class Monitor:
             },
             "telegram": {
                 "ready": s.telegram_ready,
+                "switch": s.tg_enabled,
+                "configured": bool(s.tg_bot_token and s.tg_chat_id),
                 "outage_notified": self.outage_notified,
             },
             "events": list(reversed(self.events))[:50],

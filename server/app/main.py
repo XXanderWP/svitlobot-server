@@ -130,10 +130,17 @@ async def api_get_config() -> dict[str, Any]:
 
 @app.put("/api/config", dependencies=[Depends(require_auth)])
 async def api_put_config(changes: dict[str, Any] = Body(...)) -> JSONResponse:
+    before = store.settings
     try:
         settings = store.update(changes)
     except ValidationError as exc:
         return JSONResponse({"ok": False, "error": format_validation_error(exc)}, status_code=422)
+    if settings.svitlobot_enabled != before.svitlobot_enabled:
+        monitor.add_event("Надсилання сигналів у Світлобот увімкнено" if settings.svitlobot_enabled
+                          else "Надсилання сигналів у Світлобот вимкнено", "info" if settings.svitlobot_enabled else "warn")
+    if settings.tg_enabled != before.tg_enabled:
+        monitor.add_event("Сповіщення про інтернет у Telegram увімкнено" if settings.tg_enabled
+                          else "Сповіщення про інтернет у Telegram вимкнено")
     monitor.add_event("Налаштування змінено в панелі (збережено в .env.override)")
     monitor.wake()
     return JSONResponse({"ok": True, "config": store.public_dict()})
