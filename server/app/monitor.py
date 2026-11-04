@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 MAX_EVENTS = 200
 # Ручний тестовий пінг — не частіше, ніж дозволяє Світлобот (раз на хвилину).
 MANUAL_PING_MIN_GAP = 65
+# Світлобот приймає 1 запит на хвилину на канал: після пінгу з ESP32 VPS чекає щонайменше стільки.
+CROSS_DEVICE_GAP = 65
 NOTIFY_RETRY_SECONDS = 60
 
 
@@ -92,6 +94,11 @@ class Monitor:
 
         # Режим «проброс порту»: на якому зовнішньому порту востаннє відповіла ESP32.
         self.esp_good_port: Optional[int] = None
+
+        # Стан резервного пінгу Світлобота з ESP32 (з /status або стуку) і коли його отримано.
+        self.esp_svb: dict[str, Any] = {}
+        self.esp_svb_seen_at: Optional[float] = None
+        self._ping_retry_at: Optional[float] = None
 
         # Режим «стук»: останній прийнятий і останній відхилений стук.
         self.hb_last_at: Optional[float] = None
@@ -271,11 +278,25 @@ class Monitor:
                                     s.esp_path, s.esp_key, s.http_timeout, upstream=self.vps_is_pinging()),
             reach_coro,
         )
+        if http_res.ok and http_res.info:
+            self._note_esp_svitlobot(http_res.info.get("svitlobot"))
         if port and port != self.esp_good_port:
             if self.esp_good_port:
                 self.add_event(f"ESP32 тепер відповідає на зовнішньому порту {port}")
             self.esp_good_port = port
         return http_res, reach_res
+
+    def _note_esp_svitlobot(self, data: Any) -> None:
+        if isinstance(data, dict):
+            self.esp_svb = data
+            self.esp_svb_seen_at = time.time()
+
+    def esp_last_ping_at(self) -> Optional[float]:
+        """Час останнього пінгу Світлобота з ESP32 за її ж звітом (None — не пінгувала або невідомо)."""
+        ago = self.esp_svb.get("last_ping_s")
+        if self.esp_svb_seen_at is None or not isinstance(ago, (int, float)):
+            return None
+        return self.esp_svb_seen_at - ago
 
     def _heartbeat_result(self, s: Settings) -> checks.CheckResult:
         """Стан ESP32 у режимі стуку: чи був підписаний стук за останні push_timeout секунд."""
@@ -308,6 +329,7 @@ class Monitor:
         self.hb_last_ts = result.ts
         self.hb_last_info = result.info or {}
         self.hb_last_ip = client_ip
+        self._note_esp_svitlobot(self.hb_last_info.get("svitlobot"))
         if first:
             self.add_event(f"ESP32 стукає на сервер (з адреси {client_ip})")
         # Якщо світла не було — перевіряємо одразу, а не чекаємо кінця інтервалу.
@@ -489,6 +511,9 @@ class Monitor:
     def _next_ping_delay(self) -> float:
         """Скільки чекати до наступного пінгу, щоб між пінгами було не менше ping_interval."""
         interval = self.store.settings.ping_interval
+        if self._ping_retry_at is not None:
+            retry, self._ping_retry_at = self._ping_retry_at, None
+            return max(1.0, retry - time.time())
         if self.svb_last_at is None:
             return interval
         return max(1.0, interval - (time.time() - self.svb_last_at))
@@ -508,6 +533,11 @@ class Monitor:
             return
         # Пробудження (зміна стану, збереження налаштувань) не має порушувати мінімальний інтервал.
         if self.svb_last_at is not None and time.time() - self.svb_last_at < s.ping_interval - 1:
+            return
+        # ESP32 щойно пінгувала сама — відкладаємо, щоб не отримати HTTP 429.
+        esp_at = self.esp_last_ping_at()
+        if esp_at is not None and time.time() - esp_at < CROSS_DEVICE_GAP:
+            self._ping_retry_at = esp_at + CROSS_DEVICE_GAP
             return
         assert self._client is not None
         ok, detail = await svitlobot.send_ping(self._client, s.svitlobot_url, s.svitlobot_key)
@@ -558,6 +588,8 @@ class Monitor:
                 "hb_info": self.hb_last_info,
                 "hb_reject_time": _fmt_ts(self.hb_reject_at),
                 "hb_reject_reason": self.hb_reject_reason,
+                "svitlobot": self.esp_svb,
+                "svitlobot_seen": _fmt_ts(self.esp_svb_seen_at),
             },
             "svitlobot": {
                 "enabled": s.svitlobot_enabled and bool(s.svitlobot_key),

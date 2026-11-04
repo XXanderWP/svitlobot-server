@@ -390,6 +390,13 @@ function renderStatus(s) {
     const cls = svb.last_ok ? "muted" : "bad";
     svbHtml += `<div class="${cls}" style="font-weight:400;font-size:13px">останній: ${fmtTime(svb.last_time)} · ${escapeHtml(svb.last_detail)}</div>`;
   }
+  const esp = (s.device && s.device.svitlobot) || {};
+  if (esp.enabled) {
+    const espText = esp.active === false ? "резервний пінг ESP32 чекає (VPS пінгує сам)"
+      : esp.active ? "резервний пінг ESP32 активний" + (esp.last_ping_s != null ? `, останній ${esp.last_ping_s} с тому` : "")
+      : "резервний пінг ESP32: " + (esp.status || "увімкнено");
+    svbHtml += `<div class="muted" style="font-weight:400;font-size:13px">${escapeHtml(espText)}</div>`;
+  }
   $("svb-res").innerHTML = svbHtml;
 
   const tg = s.telegram;

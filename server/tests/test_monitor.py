@@ -245,3 +245,31 @@ async def test_upstream_flag(env):
     m.svb_last_ok = True
     store.update({"svitlobot_enabled": False})
     assert not m.vps_is_pinging()
+
+
+async def test_vps_waits_after_esp_ping(env, monkeypatch):
+    """ESP32 повідомила, що пінгувала 20 с тому — VPS відкладає свій пінг до 65 с після неї."""
+    m, net, _, sent_svb, *_ = env
+    await m.run_check()
+    m._note_esp_svitlobot({"enabled": True, "active": True, "last_ping_s": 20, "interval_s": 180})
+    await m.run_svitlobot_ping()
+    assert sent_svb == []
+    assert 40 < m._next_ping_delay() <= 45
+
+    m.esp_svb_seen_at -= 60  # минула хвилина — тепер можна
+    await m.run_svitlobot_ping()
+    assert len(sent_svb) == 1
+
+
+async def test_esp_status_is_parsed_from_page(env, monkeypatch):
+    m, net, *_ = env
+
+    async def fake_http(*args, **kwargs):
+        info = {"device": "svitlobot-esp32", "svitlobot": {"enabled": True, "active": False, "last_ping_s": None}}
+        return checks.CheckResult(True, 5.0, "тест", info=info), 18080
+
+    monkeypatch.setattr(monitor_mod.checks, "check_http_ports", fake_http)
+    await m.run_check()
+    assert m.esp_svb["active"] is False
+    assert m.esp_last_ping_at() is None
+    assert "info" not in m.status()["last_check"]["http"]

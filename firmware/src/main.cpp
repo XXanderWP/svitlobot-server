@@ -189,6 +189,7 @@ static void printInfo() {
   doc["mode"] = cfg.mode;
   doc["svitlobot_set"] = svitlobotEnabled();
   if (svitlobotEnabled()) {
+    doc["svitlobot_active"] = svitlobotActive();
     doc["svitlobot_ok"] = svitlobotOk();
     doc["svitlobot_status"] = svitlobotStatusText();
   }
@@ -281,11 +282,8 @@ static void handleStatus() {
   doc["rssi"] = WiFi.RSSI();
   doc["mode"] = cfg.mode;
   if (cfg.mode == MODE_UPNP) doc["upnp_port"] = upnpPort();
-  if (svitlobotEnabled()) {
-    JsonObject svb = doc["svitlobot"].to<JsonObject>();
-    svb["ok"] = svitlobotOk();
-    svb["status"] = svitlobotStatusText();
-  }
+  // Стан резервного пінгу: сервер за ним не пінгує Світлобот одразу після ESP32 (ліміт 1 запит/хв).
+  svitlobotFillJson(doc["svitlobot"].to<JsonObject>());
   doc["message"] = "Світло є";
   String body;
   serializeJson(doc, body);

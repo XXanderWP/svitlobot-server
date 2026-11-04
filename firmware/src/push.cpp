@@ -75,6 +75,7 @@ void sendHeartbeat() {
   doc["uptime_s"] = (uint32_t)(millis() / 1000);
   doc["rssi"] = WiFi.RSSI();
   doc["ip"] = WiFi.localIP().toString();
+  svitlobotFillJson(doc["svitlobot"].to<JsonObject>());
   String body;
   serializeJson(doc, body);
 

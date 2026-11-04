@@ -34,6 +34,10 @@ String statusText = "вимкнено";
 uint32_t nextAt = 0;
 uint32_t upstreamAt = 0;
 bool upstreamSeen = false;
+uint32_t lastPingAt = 0;
+bool pingedOnce = false;
+
+bool upstreamFresh() { return upstreamSeen && millis() - upstreamAt < UPSTREAM_VALID_MS; }
 
 String urlEncode(const String &value) {
   static const char *hex = "0123456789ABCDEF";
@@ -73,6 +77,8 @@ void sendPing() {
   }
   int code = http.GET();
   http.end();
+  lastPingAt = millis();
+  pingedOnce = true;
 
   if (code >= 200 && code < 300) {
     report(true, "пінг прийнято (HTTP " + String(code) + ")");
@@ -101,7 +107,7 @@ void svitlobotLoop() {
   if (!started || WiFi.status() != WL_CONNECTED) return;
   if ((int32_t)(millis() - nextAt) < 0) return;
   nextAt = millis() + PING_INTERVAL_MS;
-  if (upstreamSeen && millis() - upstreamAt < UPSTREAM_VALID_MS) {
+  if (upstreamFresh()) {
     report(true, "очікування: VPS сам пінгує Світлобот");
     return;
   }
@@ -109,5 +115,23 @@ void svitlobotLoop() {
 }
 
 bool svitlobotEnabled() { return !cfg.svitlobotKey.isEmpty(); }
+bool svitlobotActive() { return svitlobotEnabled() && !upstreamFresh(); }
+long svitlobotLastPingAgo() { return pingedOnce ? (long)((millis() - lastPingAt) / 1000) : -1; }
+uint32_t svitlobotIntervalS() { return PING_INTERVAL_MS / 1000; }
+
+void svitlobotFillJson(JsonObject obj) {
+  obj["enabled"] = svitlobotEnabled();
+  if (!svitlobotEnabled()) return;
+  obj["active"] = svitlobotActive();
+  long ago = svitlobotLastPingAgo();
+  if (ago >= 0) {
+    obj["last_ping_s"] = ago;
+  } else {
+    obj["last_ping_s"] = nullptr;
+  }
+  obj["interval_s"] = svitlobotIntervalS();
+  obj["ok"] = lastOk;
+  obj["status"] = statusText;
+}
 bool svitlobotOk() { return lastOk; }
 String svitlobotStatusText() { return statusText; }

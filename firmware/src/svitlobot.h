@@ -15,5 +15,14 @@ void svitlobotLoop();
 void svitlobotNoteUpstream(bool upstream);
 
 bool svitlobotEnabled();
+// Чи ESP32 зараз сама відповідає за пінги (VPS давно не повідомляв, що пінгує).
+bool svitlobotActive();
+// Скільки секунд тому ESP32 надіслала останній пінг (-1 — ще не надсилала).
+long svitlobotLastPingAgo();
+uint32_t svitlobotIntervalS();
 bool svitlobotOk();
 String svitlobotStatusText();
+
+#include <ArduinoJson.h>
+// Заповнює об'єкт стану резервного пінгу для /status і стуків (ключ не включається).
+void svitlobotFillJson(JsonObject obj);

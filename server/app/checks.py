@@ -6,7 +6,7 @@ import asyncio
 import re
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import httpx
 
@@ -19,9 +19,12 @@ class CheckResult:
     ok: bool
     latency_ms: float | None = None
     detail: str = ""
+    info: dict | None = field(default=None, repr=False)  # JSON-відповідь ESP32 (лише при успіху)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("info", None)
+        return data
 
 
 def _host_for_url(host: str) -> str:
@@ -65,9 +68,12 @@ async def check_http(client: httpx.AsyncClient, host: str, port: int, path: str,
     if isinstance(uptime, int):
         detail += f", аптайм ESP32 {uptime // 3600} год {uptime % 3600 // 60} хв"
     backup = data.get("svitlobot")
-    if isinstance(backup, dict):
-        detail += "; резервний пінг Світлобота з ESP32: " + ("працює" if backup.get("ok") else str(backup.get("status", "помилка")))
-    return CheckResult(True, latency, detail)
+    if isinstance(backup, dict) and backup.get("enabled", True):
+        if backup.get("active") is False:
+            detail += "; резервний пінг ESP32 чекає (VPS пінгує сам)"
+        else:
+            detail += "; резервний пінг ESP32: " + ("працює" if backup.get("ok") else str(backup.get("status", "помилка")))
+    return CheckResult(True, latency, detail, info=data)
 
 
 async def check_icmp(host: str, timeout: float) -> CheckResult:
