@@ -19,6 +19,7 @@
 
 #include "config.h"
 #include "push.h"
+#include "svitlobot.h"
 #include "upnp.h"
 
 #ifndef FW_VERSION
@@ -64,6 +65,7 @@ static void loadConfig() {
   cfg.server = prefs.getString("srv", "");
   cfg.serverPort = prefs.getUShort("sport", DEFAULT_SERVER_PORT);
   cfg.pushInterval = prefs.getUShort("pint", DEFAULT_PUSH_INTERVAL);
+  cfg.svitlobotKey = prefs.getString("svbkey", "");
   prefs.end();
 }
 
@@ -130,6 +132,12 @@ static String saveConfigFromJson(const String &json) {
   long pushInterval = doc["push_interval"] | (long)DEFAULT_PUSH_INTERVAL;
   if (serverPort < 1 || serverPort > 65535) return "server_port має бути в діапазоні 1..65535";
   if (pushInterval < 5 || pushInterval > 300) return "push_interval має бути від 5 до 300 секунд";
+  // Ключ Світлобота: поле відсутнє — залишаємо збережений, порожній рядок — вимикаємо.
+  bool svitlobotProvided = doc["svitlobot_key"].is<const char *>();
+  String svitlobotKey = doc["svitlobot_key"] | "";
+  svitlobotKey.trim();
+  if (svitlobotKey.length() > 64) return "ключ Світлобота задовгий";
+
   if (mode == MODE_PUSH) {
     if (server.isEmpty()) return "для режиму push потрібна адреса сервера (server)";
     if (key.length() < 16) return "для режиму push потрібен ключ щонайменше з 16 символів";
@@ -150,6 +158,7 @@ static String saveConfigFromJson(const String &json) {
   prefs.putString("srv", server);
   prefs.putUShort("sport", (uint16_t)serverPort);
   prefs.putUShort("pint", (uint16_t)pushInterval);
+  if (svitlobotProvided) prefs.putString("svbkey", svitlobotKey);
   prefs.end();
   return "";
 }
@@ -178,6 +187,11 @@ static void printInfo() {
   doc["rssi"] = wifiConnected ? WiFi.RSSI() : 0;
   doc["mac"] = WiFi.macAddress();
   doc["mode"] = cfg.mode;
+  doc["svitlobot_set"] = svitlobotEnabled();
+  if (svitlobotEnabled()) {
+    doc["svitlobot_ok"] = svitlobotOk();
+    doc["svitlobot_status"] = svitlobotStatusText();
+  }
   if (cfg.mode == MODE_UPNP) {
     doc["upnp_ports"] = cfg.upnpPorts;
     doc["upnp_ok"] = upnpOk();
@@ -266,6 +280,11 @@ static void handleStatus() {
   doc["rssi"] = WiFi.RSSI();
   doc["mode"] = cfg.mode;
   if (cfg.mode == MODE_UPNP) doc["upnp_port"] = upnpPort();
+  if (svitlobotEnabled()) {
+    JsonObject svb = doc["svitlobot"].to<JsonObject>();
+    svb["ok"] = svitlobotOk();
+    svb["status"] = svitlobotStatusText();
+  }
   doc["message"] = "Світло є";
   String body;
   serializeJson(doc, body);
@@ -328,6 +347,7 @@ static void watchWifi() {
     } else {
       pushStart();
     }
+    svitlobotStart();
   } else if (!connected && wifiConnected) {
     wifiConnected = false;
     wifiLostSince = millis();
@@ -387,5 +407,6 @@ void loop() {
   if (server) server->handleClient();
   upnpLoop();
   pushLoop();
+  svitlobotLoop();
   delay(2);
 }

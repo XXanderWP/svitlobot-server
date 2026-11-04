@@ -57,6 +57,8 @@ class DeviceConfig:
     server: str = ""
     server_port: int = DEFAULT_SERVER_PORT
     push_interval: int = DEFAULT_PUSH_INTERVAL
+    # None — не змінювати збережений на ESP32 ключ; "" — вимкнути резервний пінг.
+    svitlobot_key: Optional[str] = None
 
     def to_json(self) -> str:
         data = {
@@ -75,6 +77,8 @@ class DeviceConfig:
             "server_port": self.server_port,
             "push_interval": self.push_interval,
         }
+        if self.svitlobot_key is not None:
+            data["svitlobot_key"] = self.svitlobot_key
         # ensure_ascii=True: кирилиця в SSID передається як \uXXXX — це безпечно для UART.
         return json.dumps(data, ensure_ascii=True, separators=(",", ":"))
 
@@ -243,6 +247,15 @@ class Session:
                     extra.append(cgnat[len("SVB:UPNP_CGNAT"):].strip())
             ok = rest.startswith("OK")
             return ok, rest[2:].strip() if ok else rest[4:].strip(), extra
+
+    def wait_for_svitlobot(self, timeout: float = 25.0) -> Optional[tuple[bool, str]]:
+        """Чекає перший результат резервного пінгу Світлобота з ESP32."""
+        line = self.wait_for(("SVB:SVITLOBOT ",), timeout)
+        if line is None:
+            return None
+        rest = line[len("SVB:SVITLOBOT "):]
+        ok = rest.startswith("OK")
+        return ok, rest[2:].strip() if ok else rest[4:].strip()
 
     def clear_config(self) -> None:
         self.send("SVB:CLEAR")

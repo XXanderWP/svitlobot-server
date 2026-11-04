@@ -72,7 +72,8 @@
   образ для 4 МБ flash у режимі **DIO** — у режимі QIO завантажувач S3 зациклюється з `ets_loader.c 78`;
   `Serial` — UART0 через USB-UART міст, `ARDUINO_USB_CDC_ON_BOOT=0`).
 - Файли: `main.cpp` (налаштування, UART-протокол, Wi-Fi, HTTP), `config.h` (спільна структура `Config`),
-  `upnp.cpp` (власний мінімальний клієнт UPnP IGD: SSDP → опис → SOAP), `push.cpp` (стуки з HMAC).
+  `upnp.cpp` (власний мінімальний клієнт UPnP IGD: SSDP → опис → SOAP), `push.cpp` (стуки з HMAC),
+  `svitlobot.cpp` (резервний пінг Світлобота з ESP32 щохвилини по HTTPS, якщо задано `svitlobot_key`).
 - Налаштування (Wi-Fi, режим, порти, ключ, сервер, статичний IP) зберігаються в NVS (`Preferences`, простір імен `svb`). У прошивці **немає** зашитих паролів.
 - **Режим upnp:** перебирає зовнішні порти з `upnp_ports`; порт, зайнятий іншим пристроєм
   (`GetSpecificPortMappingEntry` або помилка 718), пропускає; перший вільний відкриває на локальний `port`.
@@ -93,7 +94,10 @@
   - `SVB:SET {json}` → `SVB:OK` (зберігає й перезавантажується) або `SVB:ERR <причина>`;
   - `SVB:CLEAR` → `SVB:OK` (стирає налаштування й перезавантажується).
   - Поля JSON для `SET`: `ssid`, `password`, `port`, `key`, `hostname`, `ip`, `gateway`, `subnet`, `dns`,
-    `mode` (`upnp`|`push`), `upnp_ports` (рядок через кому), `server`, `server_port`, `push_interval`.
+    `mode` (`upnp`|`push`), `upnp_ports` (рядок через кому), `server`, `server_port`, `push_interval`,
+    `svitlobot_key` (необов'язкове: поле відсутнє — зберігається попереднє значення, `""` — вимкнути).
+  - пристрій → `SVB:SVITLOBOT OK|FAIL <опис>` — результат резервного пінгу (при зміні стану).
+  - Ключ Світлобота ніколи не виводиться в UART, `SVB:INFO` чи `/status` — лише `svitlobot_set` і стан.
 
 Збирання: `cd firmware && pio run`.
 
@@ -152,7 +156,7 @@
 - Тести сервера: `cd server && python -m pytest`.
 - Локальний запуск сервера без Docker: `cd server && pip install -r requirements.txt && ENV_FILE=./.env DATA_DIR=./data uvicorn app.main:app --reload --port 8080`.
 - Перевірка CLI: `cd cli && pip install -e . && svitlo-flasher --help`.
-- Секрети (токени, ключі, паролі) ніколи не комітимо. `.env`, `compose.env` і `server/data/` — у `.gitignore`.
+- Секрети (токени, ключі, паролі) ніколи не комітимо — у тому числі в тести, приклади й документацію. `.env`, `compose.env` і `server/data/` — у `.gitignore`.
 - Нове поле налаштувань: додати в `Settings`, у `ENV_KEYS`, у форму `index.html` і, якщо це секрет, у `SECRET_FIELDS`.
 - Нова логіка станів — спочатку в `app/logic.py` як чиста функція з тестом.
 - Не додавайте залежностей без потреби; веб-інтерфейс лишається одним HTML-файлом без збирача.

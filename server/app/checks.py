@@ -59,6 +59,9 @@ async def check_http(client: httpx.AsyncClient, host: str, port: int, path: str,
     detail = "сторінка відповідає"
     if isinstance(uptime, int):
         detail += f", аптайм ESP32 {uptime // 3600} год {uptime % 3600 // 60} хв"
+    backup = data.get("svitlobot")
+    if isinstance(backup, dict):
+        detail += "; резервний пінг Світлобота з ESP32: " + ("працює" if backup.get("ok") else str(backup.get("status", "помилка")))
     return CheckResult(True, latency, detail)
 
 

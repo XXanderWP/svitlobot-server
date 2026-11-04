@@ -190,6 +190,7 @@ def build_config(args: argparse.Namespace) -> DeviceConfig:
         server=server,
         server_port=args.server_port,
         push_interval=args.push_interval,
+        svitlobot_key=args.svitlobot_token.strip() if args.svitlobot_token is not None else None,
     )
     if cfg.ip and not (cfg.gateway and cfg.subnet):
         raise DeviceError("для статичного IP вкажіть також --gateway і --subnet")
@@ -243,6 +244,17 @@ def configure_device(port: str, cfg: DeviceConfig, reset_first: bool, generated_
             else:
                 info(f"Перший стук на сервер {cfg.server}:{cfg.server_port}...")
             mode_ok, mode_text, extra = dev.wait_for_mode_result(cfg.mode)
+            if cfg.svitlobot_key:
+                info("Резервний пінг Світлобота з ESP32...")
+                svb = dev.wait_for_svitlobot()
+                if svb is None:
+                    warn("ESP32 не повідомила результат пінгу Світлобота (перевірте пізніше: svitlo-flasher info)")
+                elif svb[0]:
+                    ok(f"Світлобот: {svb[1]}")
+                else:
+                    warn(f"Світлобот: {svb[1]}")
+            elif cfg.svitlobot_key == "":
+                info("Резервний пінг Світлобота з ESP32 вимкнено")
 
     if not ip:
         warn("Пристрій не підключився до Wi-Fi за відведений час.")
@@ -377,6 +389,8 @@ def cmd_info(args: argparse.Namespace) -> int:
         ("server_port", "Порт сервера"),
         ("push_interval", "Інтервал стуку, с"),
         ("push_status", "Стан стуку"),
+        ("svitlobot_set", "Резервний пінг Світлобота"),
+        ("svitlobot_status", "Стан пінгу Світлобота"),
     ]
     for key, label in labels:
         if key not in data:
@@ -386,7 +400,7 @@ def cmd_info(args: argparse.Namespace) -> int:
             value = {"upnp": "проброс порту (UPnP)", "push": "стук на сервер"}.get(value, value)
         if isinstance(value, bool):
             value = "так" if value else "ні"
-        print(f"{label:22} {value if value != '' else '—'}")
+        print(f"{label:27} {value if value != '' else '—'}")
     return 0
 
 
@@ -451,6 +465,11 @@ def add_config_args(p: argparse.ArgumentParser) -> None:
                    help=f"порт прийому стуків на VPS (типово {DEFAULT_SERVER_PORT})")
     m.add_argument("--push-interval", metavar="СЕК", type=int, default=DEFAULT_PUSH_INTERVAL,
                    help=f"інтервал стуку в секундах (типово {DEFAULT_PUSH_INTERVAL})")
+
+    r = p.add_argument_group("резервний пінг Світлобота")
+    r.add_argument("--svitlobot-token", metavar="КЛЮЧ",
+                   help="ключ каналу Світлобота: ESP32 сама пінгуватиме Світлобот щохвилини (на випадок, "
+                        "якщо VPS недоступний). Не вказано — залишається збережений; порожній рядок — вимкнути")
 
 
 _ARGPARSE_UK = {

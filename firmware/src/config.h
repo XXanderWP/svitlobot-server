@@ -33,6 +33,7 @@ struct Config {
   String server;                           // IP або домен сервера (режим push)
   uint16_t serverPort = DEFAULT_SERVER_PORT;
   uint16_t pushInterval = DEFAULT_PUSH_INTERVAL;  // секунд між стуками
+  String svitlobotKey;  // ключ каналу Світлобота для резервного пінгу з ESP32 (порожньо — вимкнено)
 };
 
 extern Config cfg;
