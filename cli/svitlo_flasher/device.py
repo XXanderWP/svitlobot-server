@@ -26,7 +26,7 @@ KNOWN_USB_IDS = {
     (0x1A86, 0x55D3): "CH343",
     (0x0403, 0x6001): "FTDI",
     (0x0403, 0x6010): "FTDI",
-    (0x303A, 0x1001): "ESP32 USB",
+    (0x303A, 0x1001): "рідний USB ESP32",
 }
 
 
@@ -83,6 +83,36 @@ class DeviceConfig:
         return json.dumps(data, ensure_ascii=True, separators=(",", ":"))
 
 
+def watchdog_reset(port: str) -> bool:
+    """Перезавантажує чип у звичайний режим через сторожовий таймер (для рідного USB ESP32-S3)."""
+    import contextlib
+    import io
+
+    import esptool
+
+    sink = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            esptool.main(["--port", port, "--before", "no_reset", "--after", "watchdog_reset", "chip_id"])
+        return True
+    except (Exception, SystemExit):
+        return False
+
+
+def is_native_usb(port: str) -> bool:
+    return any(p.device == port and p.vid == 0x303A for p in list_ports.comports())
+
+
+def wait_for_port(port: str, timeout: float = 10.0) -> bool:
+    """Чекає, поки порт з'явиться в системі (після перезавантаження чипа з рідним USB)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(p.device == port for p in list_ports.comports()):
+            return True
+        time.sleep(0.3)
+    return False
+
+
 def list_serial_ports() -> list[PortInfo]:
     """Повертає список послідовних портів, позначаючи ймовірні ESP32."""
     result = []
@@ -108,18 +138,41 @@ class Session:
     _buf: bytes = field(default=b"", init=False, repr=False)
 
     def __post_init__(self) -> None:
+        # Рідний USB ESP32-S3/C3 (USB-Serial-JTAG): при перезавантаженні чипа порт зникає й з'являється знову.
+        self.native_usb = is_native_usb(self.port)
+        try:
+            self._ser = self._open()
+        except serial.SerialException as exc:
+            raise DeviceError(f"не вдалося відкрити порт {self.port}: {exc}") from exc
+
+    def _open(self) -> serial.Serial:
         ser = serial.Serial()
         ser.port = self.port
         ser.baudrate = BAUD_RATE
         ser.timeout = 0.1
-        # Не смикаємо DTR/RTS під час відкриття, щоб випадково не ввести чип у режим завантажувача.
-        ser.dtr = False
-        ser.rts = False
+        if not self.native_usb:
+            # USB-UART міст: не смикаємо DTR/RTS, щоб не ввести чип у режим завантажувача.
+            ser.dtr = False
+            ser.rts = False
+        # Рідний USB: лінії не чіпаємо взагалі — будь-яка їх зміна скидає чип.
+        ser.open()
+        return ser
+
+    def _reopen(self, deadline: float) -> bool:
+        """Перепідключається до порту після його зникнення (перезавантаження чипа з рідним USB)."""
         try:
-            ser.open()
-        except serial.SerialException as exc:
-            raise DeviceError(f"не вдалося відкрити порт {self.port}: {exc}") from exc
-        self._ser = ser
+            self._ser.close()
+        except Exception:
+            pass
+        while time.monotonic() < deadline:
+            time.sleep(0.3)
+            try:
+                self._ser = self._open()
+                self._buf = b""
+                return True
+            except (serial.SerialException, OSError):
+                continue
+        return False
 
     def close(self) -> None:
         try:
@@ -135,6 +188,8 @@ class Session:
 
     def reset(self) -> None:
         """Апаратне перезавантаження через лінію RTS (EN), IO0 лишається у високому рівні."""
+        if self.native_usb:
+            return  # рідний USB зникає при скиданні — пристрій і так щойно перезавантажено
         self._ser.dtr = False
         self._ser.rts = True
         time.sleep(0.15)
@@ -143,8 +198,15 @@ class Session:
         self._ser.reset_input_buffer()
 
     def send(self, line: str) -> None:
-        self._ser.write((line + "\n").encode("utf-8"))
-        self._ser.flush()
+        data = (line + "\n").encode("utf-8")
+        try:
+            self._ser.write(data)
+            self._ser.flush()
+        except (serial.SerialException, OSError):
+            if not self._reopen(time.monotonic() + 8):
+                raise DeviceError(f"зв'язок із портом {self.port} втрачено")
+            self._ser.write(data)
+            self._ser.flush()
 
     def read_line(self, timeout: float) -> Optional[str]:
         """Читає один рядок; None, якщо час вичерпано."""
@@ -156,7 +218,13 @@ class Session:
                 if line:
                     return line
                 continue
-            chunk = self._ser.read(256)
+            try:
+                chunk = self._ser.read(256)
+            except (serial.SerialException, OSError):
+                # Порт зник (чип перезавантажується) — чекаємо, поки він з'явиться знову.
+                if not self._reopen(deadline):
+                    return None
+                continue
             if chunk:
                 self._buf += chunk
         return None
@@ -176,13 +244,45 @@ class Session:
             if self.on_log:
                 self.on_log(line)
 
-    def handshake(self, timeout: float = 10.0) -> None:
+    def boot_normally(self) -> None:
+        """Виводить чип із режиму завантажувача: імпульс скидання з IO0 у високому рівні.
+
+        На рідному USB (USB-Serial-JTAG) macOS при відкритті порту може смикнути DTR, і чип
+        перезавантажується в режим прошивки («waiting for download»).
+        """
+        if self.native_usb:
+            # Через рідний USB надійно працює лише скидання сторожовим таймером (як esptool watchdog_reset).
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            watchdog_reset(self.port)
+            time.sleep(1.5)
+            self._reopen(time.monotonic() + 8)
+            return
+        try:
+            self._ser.dtr = False
+            self._ser.rts = True
+            time.sleep(0.2)
+            self._ser.rts = False
+            time.sleep(0.2)
+        except (serial.SerialException, OSError):
+            pass
+
+    def handshake(self, timeout: float = 15.0) -> None:
         """Переконується, що на порту наша прошивка і вона відповідає."""
         deadline = time.monotonic() + timeout
+        resets = 0
         while time.monotonic() < deadline:
             self.send("SVB:PING")
-            if self.wait_for(("SVB:PONG",), 1.0):
+            line = self.wait_for(("SVB:PONG", "waiting for download"), 1.0)
+            if line and line.startswith("SVB:PONG"):
                 return
+            if line and resets < 2:
+                resets += 1
+                if self.on_log:
+                    self.on_log(line + " — перезавантажую в звичайний режим")
+                self.boot_normally()
         raise DeviceError(
             "пристрій не відповідає. Переконайтеся, що на ESP32 записана прошивка SvitloBot "
             "(команда flash) і що обрано правильний порт."

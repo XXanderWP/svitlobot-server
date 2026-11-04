@@ -19,6 +19,7 @@
 #include <WiFiUdp.h>
 
 #include "config.h"
+#include "console.h"
 
 namespace {
 
@@ -239,7 +240,7 @@ void reportFailure(const String &reason) {
   mappedPort = 0;
   statusText = reason;
   controlUrl = "";  // наступного разу шукаємо роутер заново
-  if (changed) Serial.println("SVB:UPNP FAIL " + reason);
+  if (changed) Console.println("SVB:UPNP FAIL " + reason);
   resultAnnounced = true;
   scheduleIn(RETRY_INTERVAL_MS);
 }
@@ -255,9 +256,9 @@ void reportSuccess(uint16_t port) {
   }
   statusText = "відкрито зовнішній порт " + String(port);
   if (changed) {
-    Serial.println("SVB:UPNP OK " + String(port) + " " + (externalIp.isEmpty() ? "-" : externalIp));
+    Console.println("SVB:UPNP OK " + String(port) + " " + (externalIp.isEmpty() ? "-" : externalIp));
     if (!externalIp.isEmpty() && isPrivateOrCgnat(externalIp)) {
-      Serial.println("SVB:UPNP_CGNAT " + externalIp);
+      Console.println("SVB:UPNP_CGNAT " + externalIp);
     }
   }
   resultAnnounced = true;
@@ -311,7 +312,7 @@ void runUpnp() {
       reportSuccess((uint16_t)port);
       return;
     }
-    Serial.printf("UPnP: порт %ld — %s\n", port, error.c_str());
+    Console.printf("UPnP: порт %ld — %s\n", port, error.c_str());
     lastError = error;
   }
   reportFailure("не вдалося відкрити жоден порт зі списку: " + lastError);

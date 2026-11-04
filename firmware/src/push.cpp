@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "console.h"
 #include "mbedtls/md.h"
 #include "svitlobot.h"
 
@@ -54,7 +55,7 @@ String hmacSha256Hex(const String &key, const String &message) {
 
 void report(bool ok, const String &text) {
   if (!announced || ok != lastOk || text != statusText) {
-    Serial.println(String("SVB:PUSH ") + (ok ? "OK " : "FAIL ") + text);
+    Console.println(String("SVB:PUSH ") + (ok ? "OK " : "FAIL ") + text);
   }
   announced = true;
   lastOk = ok;

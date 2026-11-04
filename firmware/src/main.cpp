@@ -18,6 +18,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "console.h"
 #include "push.h"
 #include "svitlobot.h"
 #include "upnp.h"
@@ -38,7 +39,10 @@ static const uint32_t WIFI_REPORT_TIMEOUT_MS = 30UL * 1000UL;
 Config cfg;
 static Preferences prefs;
 static WebServer *server = nullptr;
-static String serialBuf;
+static String uartBuf;
+#if SVB_HAS_USB_SERIAL
+static String usbBuf;
+#endif
 
 static bool wifiConnected = false;
 static uint32_t wifiLostSince = 0;
@@ -206,9 +210,9 @@ static void printInfo() {
     doc["push_ok"] = pushOk();
     doc["push_status"] = pushStatusText();
   }
-  Serial.print("SVB:INFO ");
-  serializeJson(doc, Serial);
-  Serial.println();
+  Console.print("SVB:INFO ");
+  serializeJson(doc, Console);
+  Console.println();
 }
 
 static void handleSerialLine(String line) {
@@ -216,46 +220,54 @@ static void handleSerialLine(String line) {
   if (line.isEmpty()) return;
 
   if (line == "SVB:PING") {
-    Serial.println("SVB:PONG");
+    Console.println("SVB:PONG");
   } else if (line == "SVB:GET") {
     printInfo();
   } else if (line.startsWith("SVB:SET ")) {
     String error = saveConfigFromJson(line.substring(8));
     if (error.isEmpty()) {
-      Serial.println("SVB:OK");
-      Serial.flush();
+      Console.println("SVB:OK");
+      Console.flush();
       delay(300);
       ESP.restart();
     } else {
-      Serial.println("SVB:ERR " + error);
+      Console.println("SVB:ERR " + error);
     }
   } else if (line == "SVB:CLEAR") {
     clearConfig();
-    Serial.println("SVB:OK");
-    Serial.flush();
+    Console.println("SVB:OK");
+    Console.flush();
     delay(300);
     ESP.restart();
   } else if (line.startsWith("SVB:")) {
-    Serial.println("SVB:ERR невідома команда");
+    Console.println("SVB:ERR невідома команда");
+  }
+}
+
+// Читає рядки команд з одного джерела (UART або рідний USB) у власний буфер.
+static void pollStream(Stream &stream, String &buf) {
+  while (stream.available()) {
+    char c = (char)stream.read();
+    if (c == '\n' || c == '\r') {
+      if (!buf.isEmpty()) {
+        handleSerialLine(buf);
+        buf = "";
+      }
+    } else if (buf.length() < 1024) {
+      buf += c;
+    } else {
+      // Захист від переповнення: відкидаємо надто довгий рядок.
+      buf = "";
+      Console.println("SVB:ERR рядок задовгий");
+    }
   }
 }
 
 static void pollSerial() {
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\n' || c == '\r') {
-      if (!serialBuf.isEmpty()) {
-        handleSerialLine(serialBuf);
-        serialBuf = "";
-      }
-    } else if (serialBuf.length() < 1024) {
-      serialBuf += c;
-    } else {
-      // Захист від переповнення: відкидаємо надто довгий рядок.
-      serialBuf = "";
-      Serial.println("SVB:ERR рядок задовгий");
-    }
-  }
+  pollStream(Serial, uartBuf);
+#if SVB_HAS_USB_SERIAL
+  pollStream(USBSerial, usbBuf);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +337,7 @@ static void startWifi() {
     WiFi.config(ip, gateway, subnet, dns);
   }
 
-  Serial.println("SVB:CONNECTING " + cfg.ssid);
+  Console.println("SVB:CONNECTING " + cfg.ssid);
   WiFi.begin(cfg.ssid.c_str(), cfg.password.c_str());
   wifiStartedAt = millis();
   wifiLostSince = millis();
@@ -338,8 +350,8 @@ static void watchWifi() {
     wifiConnected = true;
     wifiTimeoutReported = false;
     digitalWrite(LED_PIN, HIGH);
-    Serial.println("SVB:IP " + WiFi.localIP().toString());
-    Serial.printf("Підключено до Wi-Fi, HTTP-сторінка: http://%s:%u/status\n",
+    Console.println("SVB:IP " + WiFi.localIP().toString());
+    Console.printf("Підключено до Wi-Fi, HTTP-сторінка: http://%s:%u/status\n",
                   WiFi.localIP().toString().c_str(), cfg.port);
     if (cfg.mode == MODE_UPNP) {
       upnpReset();
@@ -351,17 +363,17 @@ static void watchWifi() {
     wifiConnected = false;
     wifiLostSince = millis();
     digitalWrite(LED_PIN, LOW);
-    Serial.println("Втрачено з'єднання з Wi-Fi, перепідключення...");
+    Console.println("Втрачено з'єднання з Wi-Fi, перепідключення...");
   }
 
   if (!connected) {
     if (!wifiTimeoutReported && millis() - wifiStartedAt > WIFI_REPORT_TIMEOUT_MS) {
       wifiTimeoutReported = true;
-      Serial.println("SVB:WIFI_TIMEOUT");
+      Console.println("SVB:WIFI_TIMEOUT");
     }
     if (millis() - wifiLostSince > WIFI_RESTART_TIMEOUT_MS) {
-      Serial.println("Wi-Fi недоступний понад 5 хвилин — перезавантаження");
-      Serial.flush();
+      Console.println("Wi-Fi недоступний понад 5 хвилин — перезавантаження");
+      Console.flush();
       ESP.restart();
     }
   }
@@ -372,19 +384,18 @@ static void watchWifi() {
 // ---------------------------------------------------------------------------
 
 void setup() {
-  Serial.setRxBufferSize(1024);
-  Serial.begin(115200);
+  Console.begin();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   delay(200);
 
-  Serial.println();
-  Serial.println("SVB:READY " FW_VERSION);
+  Console.println();
+  Console.println("SVB:READY " FW_VERSION);
   loadConfig();
 
   if (cfg.ssid.isEmpty()) {
-    Serial.println("SVB:NOCONFIG");
-    Serial.println("Налаштування відсутні. Скористайтеся: svitlo-flasher configure");
+    Console.println("SVB:NOCONFIG");
+    Console.println("Налаштування відсутні. Скористайтеся: svitlo-flasher configure");
     return;
   }
 

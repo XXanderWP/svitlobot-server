@@ -7,6 +7,7 @@ import getpass
 import ipaddress
 import secrets
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,9 @@ from .device import (
     DeviceConfig,
     DeviceError,
     Session,
+    is_native_usb,
     list_serial_ports,
+    wait_for_port,
 )
 
 DEFAULT_FLASH_BAUD = 460800
@@ -324,7 +327,9 @@ def cmd_flash(args: argparse.Namespace) -> int:
                 "  Також можна вказати шлях вручну: --firmware шлях/до/файлу.bin"
             )
 
-        esptool_args = ["--chip", chip, "--port", port, "--baud", str(args.baud),
+        # Через рідний USB скидання по RTS лишає чип у режимі завантажувача — потрібен watchdog_reset.
+        after = "watchdog_reset" if is_native_usb(port) else "hard_reset"
+        esptool_args = ["--chip", chip, "--port", port, "--baud", str(args.baud), "--after", after,
                         "write_flash", "-z"]
         if args.erase:
             esptool_args.append("--erase-all")
@@ -332,6 +337,8 @@ def cmd_flash(args: argparse.Namespace) -> int:
         info(f"Прошивка {firmware.name} на {port}...")
         run_esptool(esptool_args)
         ok("Прошивку записано")
+        time.sleep(1.5)
+        wait_for_port(port)  # рідний USB після скидання на мить зникає
 
         if cfg is None:
             return 0

@@ -18,6 +18,7 @@
 #include <WiFiClientSecure.h>
 
 #include "config.h"
+#include "console.h"
 
 namespace {
 
@@ -58,7 +59,7 @@ String urlEncode(const String &value) {
 void report(bool ok, const String &text) {
   if (!announced || ok != lastOk || text != statusText) {
     // Ключ у виводі ніколи не друкуємо.
-    Serial.println(String("SVB:SVITLOBOT ") + (ok ? "OK " : "FAIL ") + text);
+    Console.println(String("SVB:SVITLOBOT ") + (ok ? "OK " : "FAIL ") + text);
   }
   announced = true;
   lastOk = ok;

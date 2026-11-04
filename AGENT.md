@@ -70,7 +70,11 @@
 
 - PlatformIO + фреймворк Arduino, два середовища: `esp32dev` (класичний ESP32) і `esp32s3` (ESP32-S3,
   образ для 4 МБ flash у режимі **DIO** — у режимі QIO завантажувач S3 зациклюється з `ets_loader.c 78`;
-  `Serial` — UART0 через USB-UART міст, `ARDUINO_USB_CDC_ON_BOOT=0`).
+  `Serial` — UART0 через USB-UART міст, `ARDUINO_USB_CDC_ON_BOOT=0`). `console.cpp` дублює вивід і приймає
+  команди також через рідний USB (`USBSerial`, HWCDC) з нульовим тайм-аутом запису.
+- CLI і рідний USB (VID 0x303A): порт відкривається без зміни DTR/RTS (інакше чип скидається),
+  після прошивки — `--after watchdog_reset` (скидання по RTS лишає S3 у режимі завантажувача),
+  при перезавантаженні чипа порт зникає — `Session` перепідключається автоматично.
 - Файли: `main.cpp` (налаштування, UART-протокол, Wi-Fi, HTTP), `config.h` (спільна структура `Config`),
   `upnp.cpp` (власний мінімальний клієнт UPnP IGD: SSDP → опис → SOAP), `push.cpp` (стуки з HMAC),
   `svitlobot.cpp` (резервний пінг Світлобота з ESP32 по HTTPS раз на 3 хв, якщо задано `svitlobot_key`,
