@@ -24,7 +24,7 @@ def env(tmp_path, monkeypatch):
     sent_svb: list[str] = []
 
     async def fake_http(*args, **kwargs):
-        return checks.CheckResult(net["http"], 10.0, "тест")
+        return checks.CheckResult(net["http"], 10.0, "тест"), (18080 if net["http"] else None)
 
     async def fake_icmp(*args, **kwargs):
         return checks.CheckResult(net["reach"], 5.0, "тест")
@@ -37,7 +37,7 @@ def env(tmp_path, monkeypatch):
         sent_svb.append(key)
         return True, "OK (200)"
 
-    monkeypatch.setattr(monitor_mod.checks, "check_http", fake_http)
+    monkeypatch.setattr(monitor_mod.checks, "check_http_ports", fake_http)
     monkeypatch.setattr(monitor_mod.checks, "check_icmp", fake_icmp)
     monkeypatch.setattr(monitor_mod.telegram, "send_message", fake_tg)
     monkeypatch.setattr(monitor_mod.svitlobot, "send_ping", fake_svb)
@@ -155,3 +155,24 @@ async def test_message_uses_event_time_not_confirmation_time(env, monkeypatch):
     for _ in range(3):
         await tick(1)
     assert sent_tg[1][0] == "📶 07:48 Інтернет з'явився\n⏳ Його не було 2год 22хв"
+
+
+async def test_push_mode_uses_heartbeats(env):
+    import time as real_time
+
+    from app import heartbeat
+
+    m, net, *_rest, store = env
+    store.update({"device_mode": "push", "esp_key": "k" * 20, "push_timeout": 30})
+    net.update(http=True, reach=True)  # HTTP-перевірка в режимі push не використовується
+
+    await m.run_check()
+    assert m.debouncer.confirmed == PowerState.OFF  # стуків ще не було, роутер живий
+
+    m.accept_heartbeat(heartbeat.Verification(True, "OK", int(real_time.time()), {"device": "svitlobot-esp32"}), "198.51.100.7")
+    await m.run_check()
+    assert m.debouncer.confirmed == PowerState.ON
+
+    m.hb_last_at -= 31  # стук застарів
+    await m.run_check()
+    assert m.debouncer.confirmed == PowerState.OFF

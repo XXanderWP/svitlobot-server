@@ -35,6 +35,7 @@ cd "$DIR"
 echo "• Збирання образу та перезапуск контейнера..."
 # --force-recreate: контейнер перечитає новий .env навіть без змін у коді.
 # --env-file compose.env: Compose не читає .env із секретами (див. make_env.py).
+# Старий контейнер міг бути без порту стуків — --force-recreate застосує нову конфігурацію.
 docker compose --env-file compose.env up -d --build --force-recreate --remove-orphans --quiet-pull
 
 echo "• Очікування перевірки стану контейнера..."

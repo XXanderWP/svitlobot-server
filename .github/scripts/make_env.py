@@ -5,7 +5,7 @@
 скрипт друкує лише назви змінних. Файл створюється з правами 600.
 
 Поруч створюється compose.env лише з несекретними параметрами для Docker Compose
-(WEB_PORT, WEB_BIND). Compose запускається з ним замість .env, бо інакше він сам розбирав би
+(WEB_PORT, WEB_BIND, HEARTBEAT_PORT, HEARTBEAT_BIND). Compose запускається з ним замість .env, бо інакше він сам розбирав би
 .env для підстановки змінних і міг би вивести в лог фрагмент секрету (напр. частину пароля
 після символу `$` у попередженні «variable is not set»).
 
@@ -23,9 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "server"))
 from app.envfile import quote_value  # noqa: E402
 
 REQUIRED = ["PANEL_USERNAME", "PANEL_PASSWORD", "SVITLOBOT_TOKEN", "TARGET_IP"]
-OPTIONAL = ["TELEGRAM_BOT_TOKEN", "SVITLOBOT_CHANNEL", "ESP_PORT", "ESP_KEY"]
+OPTIONAL = ["TELEGRAM_BOT_TOKEN", "SVITLOBOT_CHANNEL", "DEVICE_MODE", "ESP_PORTS", "ESP_KEY"]
 # Несекретні параметри контейнера — лише для compose.env.
-COMPOSE_ONLY = ["WEB_PORT", "WEB_BIND"]
+COMPOSE_ONLY = ["WEB_PORT", "WEB_BIND", "HEARTBEAT_PORT", "HEARTBEAT_BIND"]
 
 
 def write_private(path: Path, lines: list[str]) -> None:

@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 import httpx
 
-from . import __version__, checks, svitlobot, telegram
+from . import __version__, checks, heartbeat, svitlobot, telegram
 from .config import DEFAULT_TEXT_LOST, DEFAULT_TEXT_RESTORED, ConfigStore, Settings
 from .logic import (
     STATE_LABELS,
@@ -88,6 +88,19 @@ class Monitor:
         self.svb_last_detail = ""
         self.svb_consecutive_errors = 0
 
+        # Режим «проброс порту»: на якому зовнішньому порту востаннє відповіла ESP32.
+        self.esp_good_port: Optional[int] = None
+
+        # Режим «стук»: останній прийнятий і останній відхилений стук.
+        self.hb_last_at: Optional[float] = None
+        self.hb_last_ts: Optional[int] = None
+        self.hb_last_info: dict[str, Any] = {}
+        self.hb_last_ip = ""
+        self.hb_reject_at: Optional[float] = None
+        self.hb_reject_reason = ""
+        self.hb_reject_ip = ""
+        self._hb_reject_logged_at = 0.0
+
         self.events: deque[dict[str, str]] = deque(maxlen=MAX_EVENTS)
 
         self._wake_check = asyncio.Event()
@@ -122,6 +135,8 @@ class Monitor:
         self.state_changed_at = data.get("state_changed_at")
         self.unknown_since = data.get("unknown_since")
         self.outage_notified = bool(data.get("outage_notified"))
+        self.hb_last_ts = data.get("hb_last_ts")
+        self.esp_good_port = data.get("esp_good_port")
         for event in data.get("events", [])[-MAX_EVENTS:]:
             if isinstance(event, dict):
                 self.events.append(event)
@@ -133,6 +148,8 @@ class Monitor:
             "state_changed_at": self.state_changed_at,
             "unknown_since": self.unknown_since,
             "outage_notified": self.outage_notified,
+            "hb_last_ts": self.hb_last_ts,
+            "esp_good_port": self.esp_good_port,
             "events": list(self.events),
         }
         try:
@@ -236,17 +253,75 @@ class Monitor:
             self._save_state()
 
     async def _probe(self, s: Settings) -> tuple[checks.CheckResult, checks.CheckResult]:
-        """Паралельно перевіряє сторінку ESP32 і доступність IP."""
+        """Паралельно перевіряє ESP32 (сторінку або свіжість стуку) і доступність IP."""
         assert self._client is not None
         if s.reachability_method == "tcp":
             reach_coro = checks.check_tcp(s.target_host, s.tcp_port, s.ping_timeout)
         else:
             reach_coro = checks.check_icmp(s.target_host, s.ping_timeout)
-        http_res, reach_res = await asyncio.gather(
-            checks.check_http(self._client, s.target_host, s.esp_port, s.esp_path, s.esp_key, s.http_timeout),
+
+        if s.device_mode == "push":
+            reach_res = await reach_coro
+            return self._heartbeat_result(s), reach_res
+
+        (http_res, port), reach_res = await asyncio.gather(
+            checks.check_http_ports(self._client, s.target_host, s.esp_port_list, self.esp_good_port,
+                                    s.esp_path, s.esp_key, s.http_timeout),
             reach_coro,
         )
+        if port and port != self.esp_good_port:
+            if self.esp_good_port:
+                self.add_event(f"ESP32 тепер відповідає на зовнішньому порту {port}")
+            self.esp_good_port = port
         return http_res, reach_res
+
+    def _heartbeat_result(self, s: Settings) -> checks.CheckResult:
+        """Стан ESP32 у режимі стуку: чи був підписаний стук за останні push_timeout секунд."""
+        now = time.time()
+        if self.hb_last_at is None:
+            detail = "стуків від ESP32 ще не було"
+            if self.hb_reject_at and now - self.hb_reject_at < s.push_timeout:
+                detail += f"; відхилено запит: {self.hb_reject_reason}"
+            return checks.CheckResult(False, None, detail)
+        age = now - self.hb_last_at
+        ok = age <= s.push_timeout
+        detail = "останній стук щойно" if age < 5 else f"останній стук {format_duration(age)} тому"
+        if not ok and self.hb_reject_at and self.hb_reject_at > self.hb_last_at:
+            detail += f"; після нього відхилено запит: {self.hb_reject_reason}"
+        return checks.CheckResult(ok, None, detail)
+
+    # ------------------------------------------------------------------
+    # Приймання стуків (викликається сервером стуків у тому ж циклі подій)
+    # ------------------------------------------------------------------
+
+    def heartbeat_key(self) -> str:
+        return self.store.settings.esp_key
+
+    def heartbeat_last_ts(self) -> Optional[int]:
+        return self.hb_last_ts
+
+    def accept_heartbeat(self, result: heartbeat.Verification, client_ip: str) -> None:
+        first = self.hb_last_at is None or time.time() - self.hb_last_at > self.store.settings.push_timeout
+        self.hb_last_at = time.time()
+        self.hb_last_ts = result.ts
+        self.hb_last_info = result.info or {}
+        self.hb_last_ip = client_ip
+        if first:
+            self.add_event(f"ESP32 стукає на сервер (з адреси {client_ip})")
+        # Якщо світла не було — перевіряємо одразу, а не чекаємо кінця інтервалу.
+        if self.store.settings.device_mode == "push" and self.debouncer.confirmed != PowerState.ON:
+            self._wake_check.set()
+
+    def reject_heartbeat(self, reason: str, client_ip: str) -> None:
+        now = time.time()
+        changed = reason != self.hb_reject_reason
+        self.hb_reject_at = now
+        self.hb_reject_reason = reason
+        self.hb_reject_ip = client_ip
+        # Не засмічуємо журнал: однакова причина — не частіше ніж раз на 10 хвилин.
+        if changed or now - self._hb_reject_logged_at > 600:
+            self._hb_reject_logged_at = now
+            self.add_event(f"Відхилено стук з {client_ip}: {reason}", "warn")
 
     async def _on_transition(self, t: Transition, s: Settings, now: float) -> None:
         self.state_changed_at = now
@@ -260,7 +335,7 @@ class Monitor:
             return
 
         if cur == PowerState.ON:
-            self.add_event("Світло є: сторінка ESP32 відповідає")
+            self.add_event("Світло є: ESP32 на зв'язку")
         else:
             self.add_event("Світла немає: IP відповідає, а ESP32 — ні", "warn")
 
@@ -339,12 +414,21 @@ class Monitor:
         else:
             http_res, reach_res = await self._probe(s)
             reach_title = "TCP-доступність IP" if s.reachability_method == "tcp" else "Пінг IP"
-            add("esp", f"Сторінка ESP32 ({s.target_host}:{s.esp_port})",
-                "ok" if http_res.ok else "error", http_res.detail)
+            if s.device_mode == "push":
+                add("esp", "Стуки від ESP32", "ok" if http_res.ok else "error", http_res.detail)
+                if not s.esp_key:
+                    add("esp_key", "Ключ ESP32 (ESP_KEY)", "error", "не задано — стуки не можуть бути перевірені")
+            else:
+                add("esp", f"Сторінка ESP32 ({s.target_host}, порти {s.esp_ports})",
+                    "ok" if http_res.ok else "error", http_res.detail)
+                if self.hb_last_at and time.time() - self.hb_last_at < s.push_timeout:
+                    add("mode", "Режим роботи", "warn",
+                        "ESP32 зараз стукає на сервер, а в панелі обрано «проброс порту» — перемкніть режим")
             add("reach", f"{reach_title} ({s.target_host})", "ok" if reach_res.ok else "error", reach_res.detail)
             if not http_res.ok and not reach_res.ok:
                 add("summary", "Висновок", "warn",
-                    "ні ESP32, ні IP не відповідають — перевірте адресу, проброс порту та чи є інтернет на об'єкті")
+                    "ні ESP32, ні IP не відповідають — перевірте адресу, проброс порту (UPnP) "
+                    "та чи є інтернет на об'єкті")
 
         # Світлобот
         if not s.svitlobot_key:
@@ -445,6 +529,15 @@ class Monitor:
                 "http": self.last_http.to_dict() if self.last_http else None,
                 "reach": self.last_reach.to_dict() if self.last_reach else None,
                 "reach_method": s.reachability_method,
+            },
+            "device": {
+                "mode": s.device_mode,
+                "good_port": self.esp_good_port,
+                "hb_last_time": _fmt_ts(self.hb_last_at),
+                "hb_last_ip": self.hb_last_ip,
+                "hb_info": self.hb_last_info,
+                "hb_reject_time": _fmt_ts(self.hb_reject_at),
+                "hb_reject_reason": self.hb_reject_reason,
             },
             "svitlobot": {
                 "enabled": s.svitlobot_enabled and bool(s.svitlobot_key),

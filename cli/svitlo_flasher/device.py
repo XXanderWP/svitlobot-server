@@ -12,6 +12,12 @@ from serial.tools import list_ports
 
 BAUD_RATE = 115200
 
+MODE_UPNP = "upnp"
+MODE_PUSH = "push"
+DEFAULT_UPNP_PORTS = "18080,18081,18082,18083,18084"
+DEFAULT_SERVER_PORT = 8081
+DEFAULT_PUSH_INTERVAL = 20
+
 # Відомі USB-UART мости, які зазвичай стоять на платах ESP32.
 KNOWN_USB_IDS = {
     (0x10C4, 0xEA60): "CP210x",
@@ -45,6 +51,11 @@ class DeviceConfig:
     gateway: str = ""
     subnet: str = ""
     dns: str = ""
+    mode: str = MODE_UPNP
+    upnp_ports: str = DEFAULT_UPNP_PORTS
+    server: str = ""
+    server_port: int = DEFAULT_SERVER_PORT
+    push_interval: int = DEFAULT_PUSH_INTERVAL
 
     def to_json(self) -> str:
         data = {
@@ -57,6 +68,11 @@ class DeviceConfig:
             "gateway": self.gateway,
             "subnet": self.subnet,
             "dns": self.dns,
+            "mode": self.mode,
+            "upnp_ports": self.upnp_ports,
+            "server": self.server,
+            "server_port": self.server_port,
+            "push_interval": self.push_interval,
         }
         # ensure_ascii=True: кирилиця в SSID передається як \uXXXX — це безпечно для UART.
         return json.dumps(data, ensure_ascii=True, separators=(",", ":"))
@@ -201,6 +217,31 @@ class Session:
                 return None
             if self.on_log:
                 self.on_log(line)
+
+    def wait_for_mode_result(self, mode: str, timeout: float = 40.0) -> tuple[bool, str, list[str]]:
+        """Чекає перший результат UPnP або стуку. Повертає (успіх, текст, додаткові рядки)."""
+        prefix = "SVB:UPNP " if mode == MODE_UPNP else "SVB:PUSH "
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, "пристрій не повідомив результат за відведений час", []
+            line = self.wait_for((prefix,), remaining)
+            if line is None:
+                return False, "пристрій не повідомив результат за відведений час", []
+            rest = line[len(prefix):]
+            # Очікування NTP — проміжний стан, чекаємо далі.
+            if mode == MODE_PUSH and "NTP" in rest:
+                if self.on_log:
+                    self.on_log(line)
+                continue
+            extra = []
+            if rest.startswith("OK") and mode == MODE_UPNP:
+                cgnat = self.wait_for(("SVB:UPNP_CGNAT",), 1.5)
+                if cgnat:
+                    extra.append(cgnat[len("SVB:UPNP_CGNAT"):].strip())
+            ok = rest.startswith("OK")
+            return ok, rest[2:].strip() if ok else rest[4:].strip(), extra
 
     def clear_config(self) -> None:
         self.send("SVB:CLEAR")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 import secrets
@@ -13,7 +15,9 @@ from fastapi import Body, Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import ValidationError
+import uvicorn
 
+from . import heartbeat
 from .config import DATA_DIR, ConfigStore, format_validation_error
 from .monitor import Monitor
 
@@ -40,12 +44,49 @@ if not PANEL_PASSWORD:
     )
 
 
+HEARTBEAT_LISTEN_PORT = int(os.environ.get("HEARTBEAT_LISTEN_PORT", "8081"))
+# Зовнішній порт стуків (з compose.env) — лише для підказки у веб-панелі.
+HEARTBEAT_PUBLIC_PORT = int(os.environ.get("HEARTBEAT_PUBLIC_PORT", str(HEARTBEAT_LISTEN_PORT)))
+
+
+class _EmbeddedServer(uvicorn.Server):
+    """Другий uvicorn-сервер у тому ж процесі: не перехоплює сигнали головного сервера."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):  # uvicorn ≥ 0.29
+        yield
+
+    def install_signal_handlers(self) -> None:  # старіші версії uvicorn
+        pass
+
+
+async def _run_heartbeat_server(server: _EmbeddedServer) -> None:
+    try:
+        await server.serve()
+    except (SystemExit, OSError) as exc:
+        log.error("Не вдалося запустити сервер стуків на порту %s: %s", HEARTBEAT_LISTEN_PORT, exc)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await monitor.start()
+    hb_server = None
+    hb_task = None
+    if HEARTBEAT_LISTEN_PORT:
+        hb_app = heartbeat.create_app(monitor.heartbeat_key, monitor.heartbeat_last_ts,
+                                      monitor.accept_heartbeat, monitor.reject_heartbeat)
+        hb_server = _EmbeddedServer(uvicorn.Config(
+            hb_app, host="0.0.0.0", port=HEARTBEAT_LISTEN_PORT, lifespan="off",
+            access_log=False, log_level="warning",
+        ))
+        hb_task = asyncio.create_task(_run_heartbeat_server(hb_server))
+        log.info("Сервер стуків слухає порт %s", HEARTBEAT_LISTEN_PORT)
     try:
         yield
     finally:
+        if hb_server and hb_task:
+            hb_server.should_exit = True
+            await hb_task
         await monitor.stop()
 
 
@@ -77,7 +118,9 @@ async def index() -> FileResponse:
 
 @app.get("/api/status", dependencies=[Depends(require_auth)])
 async def api_status() -> dict[str, Any]:
-    return monitor.status()
+    data = monitor.status()
+    data["device"]["hb_public_port"] = HEARTBEAT_PUBLIC_PORT
+    return data
 
 
 @app.get("/api/config", dependencies=[Depends(require_auth)])
@@ -125,7 +168,7 @@ async def api_check_now() -> dict[str, Any]:
     if not store.settings.monitoring_ready:
         return {"ok": False, "error": "Не задано адресу об'єкта"}
     await monitor.run_check()
-    return {"ok": True, "status": monitor.status()}
+    return {"ok": True, "status": await api_status()}
 
 
 @app.post("/api/test/telegram", dependencies=[Depends(require_auth)])

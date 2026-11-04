@@ -35,6 +35,9 @@ DEFAULT_SVITLOBOT_URL = "https://api.svitlobot.in.ua/channelPing?channel_key={ke
 DEFAULT_TEXT_LOST = "📵 {time} Зник інтернет\n⏳ Статус світла тимчасово невідомий"
 DEFAULT_TEXT_RESTORED = "📶 {time} Інтернет з'явився\n⏳ Його не було {duration}"
 
+# Зовнішні порти-кандидати (мають збігатися з --upnp-ports при прошивці).
+DEFAULT_ESP_PORTS = "18080,18081,18082,18083,18084"
+
 # Поля, значення яких не віддаються у веб-інтерфейс.
 SECRET_FIELDS = ("svitlobot_key", "esp_key", "tg_bot_token")
 
@@ -46,9 +49,13 @@ class Settings(BaseModel):
     svitlobot_url: str = DEFAULT_SVITLOBOT_URL
     ping_interval: int = Field(60, ge=10, le=600)
 
+    # Режим роботи ESP32: upnp — сервер сам звертається до сторінки ESP32 (порт відкрито через
+    # UPnP або вручну); push — ESP32 сам стукає на сервер.
+    device_mode: str = Field("upnp", pattern="^(upnp|push)$")
+
     # Об'єкт перевірки
     target_host: str = ""
-    esp_port: int = Field(8080, ge=1, le=65535)
+    esp_ports: str = DEFAULT_ESP_PORTS
     esp_path: str = "/status"
     esp_key: str = ""
     http_timeout: float = Field(5.0, ge=1, le=30)
@@ -56,6 +63,7 @@ class Settings(BaseModel):
     tcp_port: int = Field(443, ge=1, le=65535)
     ping_timeout: float = Field(3.0, ge=1, le=30)
     check_interval: int = Field(20, ge=5, le=600)
+    push_timeout: int = Field(60, ge=10, le=900)
     confirm_count: int = Field(3, ge=1, le=20)
     unknown_policy: UnknownPolicy = UnknownPolicy.KEEP_LAST
 
@@ -77,6 +85,27 @@ class Settings(BaseModel):
     def _path(cls, v: str) -> str:
         v = v.strip() or "/"
         return v if v.startswith("/") else "/" + v
+
+    @field_validator("esp_ports")
+    @classmethod
+    def _ports(cls, v: str) -> str:
+        ports: list[int] = []
+        for item in v.replace(" ", "").split(","):
+            if not item:
+                continue
+            if not item.isdigit() or not 1 <= int(item) <= 65535:
+                raise ValueError(f"некоректний порт: {item}")
+            if int(item) not in ports:
+                ports.append(int(item))
+        if not ports:
+            raise ValueError("вкажіть хоча б один порт")
+        if len(ports) > 10:
+            raise ValueError("не більше 10 портів")
+        return ",".join(str(p) for p in ports)
+
+    @property
+    def esp_port_list(self) -> list[int]:
+        return [int(p) for p in self.esp_ports.split(",")]
 
     @field_validator("svitlobot_url")
     @classmethod
@@ -109,7 +138,9 @@ FIELD_LABELS = {
     "svitlobot_url": "URL API Світлобота",
     "ping_interval": "Інтервал пінгів Світлобота",
     "target_host": "Адреса об'єкта",
-    "esp_port": "Порт ESP32",
+    "device_mode": "Режим роботи ESP32",
+    "esp_ports": "Порти ESP32",
+    "push_timeout": "Тайм-аут стуку",
     "esp_path": "Шлях сторінки ESP32",
     "http_timeout": "Тайм-аут HTTP",
     "reachability_method": "Спосіб перевірки доступності",
@@ -156,7 +187,9 @@ ENV_KEYS: dict[str, str] = {
     "svitlobot_url": "SVITLOBOT_URL",
     "ping_interval": "SVITLOBOT_PING_INTERVAL",
     "target_host": "TARGET_IP",
-    "esp_port": "ESP_PORT",
+    "device_mode": "DEVICE_MODE",
+    "esp_ports": "ESP_PORTS",
+    "push_timeout": "PUSH_TIMEOUT",
     "esp_path": "ESP_PATH",
     "esp_key": "ESP_KEY",
     "http_timeout": "HTTP_TIMEOUT",

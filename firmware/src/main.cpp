@@ -1,12 +1,14 @@
 /*
  * Прошивка SvitloBot для ESP32.
  *
- * Призначення: ESP32 живиться від мережі (без ДБЖ) і піднімає маленьку
- * HTTP-сторінку. Сервіс моніторингу на VPS періодично звертається до неї:
- * якщо сторінка відповідає — світло є.
+ * Призначення: ESP32 живиться від мережі (без ДБЖ) і сигналізує серверу, що світло є.
+ * Два режими роботи:
+ *   upnp — піднімає HTTP-сторінку та сам відкриває для неї порт на роутері (UPnP);
+ *          сервіс на VPS періодично звертається до сторінки;
+ *   push — сам періодично «стукає» на сервер підписаним запитом (проброс порту не потрібен).
  *
- * Налаштування (Wi-Fi, порт, ключ доступу, статичний IP) зберігаються в NVS
- * і передаються через UART утилітою svitlo-flasher. Опис протоколу — в AGENT.md.
+ * Налаштування зберігаються в NVS і передаються через UART утилітою svitlo-flasher.
+ * Опис протоколу — в AGENT.md.
  */
 
 #include <Arduino.h>
@@ -14,6 +16,10 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+
+#include "config.h"
+#include "push.h"
+#include "upnp.h"
 
 #ifndef FW_VERSION
 #define FW_VERSION "0.0.0"
@@ -23,28 +29,12 @@
 #define LED_PIN 2
 #endif
 
-// Ідентифікатор пристрою: сервер перевіряє його у відповіді, щоб не сплутати
-// ESP32 зі сторінкою роутера чи іншого пристрою на тому ж порту.
-static const char *DEVICE_ID = "svitlobot-esp32";
-static const uint16_t DEFAULT_HTTP_PORT = 8080;
 // Якщо Wi-Fi недоступний довше за цей час — перезавантажуємося.
 static const uint32_t WIFI_RESTART_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 // Через скільки після початку підключення повідомити CLI про тайм-аут.
 static const uint32_t WIFI_REPORT_TIMEOUT_MS = 30UL * 1000UL;
 
-struct Config {
-  String ssid;
-  String password;
-  String key;
-  String hostname;
-  String ip;
-  String gateway;
-  String subnet;
-  String dns;
-  uint16_t port = DEFAULT_HTTP_PORT;
-};
-
-static Config cfg;
+Config cfg;
 static Preferences prefs;
 static WebServer *server = nullptr;
 static String serialBuf;
@@ -69,6 +59,11 @@ static void loadConfig() {
   cfg.subnet = prefs.getString("mask", "");
   cfg.dns = prefs.getString("dns", "");
   cfg.port = prefs.getUShort("port", DEFAULT_HTTP_PORT);
+  cfg.mode = prefs.getString("mode", MODE_UPNP);
+  cfg.upnpPorts = prefs.getString("uports", DEFAULT_UPNP_PORTS);
+  cfg.server = prefs.getString("srv", "");
+  cfg.serverPort = prefs.getUShort("sport", DEFAULT_SERVER_PORT);
+  cfg.pushInterval = prefs.getUShort("pint", DEFAULT_PUSH_INTERVAL);
   prefs.end();
 }
 
@@ -108,16 +103,53 @@ static String saveConfigFromJson(const String &json) {
   String hostname = doc["hostname"] | "svitlobot";
   if (hostname.isEmpty()) hostname = "svitlobot";
 
+  String key = doc["key"] | "";
+  String mode = doc["mode"] | MODE_UPNP;
+  if (mode != MODE_UPNP && mode != MODE_PUSH) return "режим має бути upnp або push";
+
+  String upnpPorts = doc["upnp_ports"] | DEFAULT_UPNP_PORTS;
+  int portCount = 0;
+  String list = upnpPorts + ",";
+  int start = 0;
+  while (start < (int)list.length()) {
+    int comma = list.indexOf(',', start);
+    String item = list.substring(start, comma);
+    start = comma + 1;
+    item.trim();
+    if (item.isEmpty()) continue;
+    long value = item.toInt();
+    if (value < 1 || value > 65535) return "некоректний порт у списку upnp_ports: " + item;
+    portCount++;
+  }
+  if (mode == MODE_UPNP && portCount == 0) return "список upnp_ports порожній";
+  if (portCount > 10) return "у списку upnp_ports не більше 10 портів";
+
+  String server = doc["server"] | "";
+  server.trim();
+  long serverPort = doc["server_port"] | (long)DEFAULT_SERVER_PORT;
+  long pushInterval = doc["push_interval"] | (long)DEFAULT_PUSH_INTERVAL;
+  if (serverPort < 1 || serverPort > 65535) return "server_port має бути в діапазоні 1..65535";
+  if (pushInterval < 5 || pushInterval > 300) return "push_interval має бути від 5 до 300 секунд";
+  if (mode == MODE_PUSH) {
+    if (server.isEmpty()) return "для режиму push потрібна адреса сервера (server)";
+    if (key.length() < 16) return "для режиму push потрібен ключ щонайменше з 16 символів";
+  }
+
   prefs.begin("svb", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pass", password);
-  prefs.putString("key", String(doc["key"] | ""));
+  prefs.putString("key", key);
   prefs.putString("host", hostname);
   prefs.putString("ip", ip);
   prefs.putString("gw", gateway);
   prefs.putString("mask", subnet);
   prefs.putString("dns", dns);
   prefs.putUShort("port", (uint16_t)port);
+  prefs.putString("mode", mode);
+  prefs.putString("uports", upnpPorts);
+  prefs.putString("srv", server);
+  prefs.putUShort("sport", (uint16_t)serverPort);
+  prefs.putUShort("pint", (uint16_t)pushInterval);
   prefs.end();
   return "";
 }
@@ -145,6 +177,20 @@ static void printInfo() {
   doc["ip"] = wifiConnected ? WiFi.localIP().toString() : "";
   doc["rssi"] = wifiConnected ? WiFi.RSSI() : 0;
   doc["mac"] = WiFi.macAddress();
+  doc["mode"] = cfg.mode;
+  if (cfg.mode == MODE_UPNP) {
+    doc["upnp_ports"] = cfg.upnpPorts;
+    doc["upnp_ok"] = upnpOk();
+    doc["upnp_port"] = upnpPort();
+    doc["upnp_external_ip"] = upnpExternalIp();
+    doc["upnp_status"] = upnpStatusText();
+  } else {
+    doc["server"] = cfg.server;
+    doc["server_port"] = cfg.serverPort;
+    doc["push_interval"] = cfg.pushInterval;
+    doc["push_ok"] = pushOk();
+    doc["push_status"] = pushStatusText();
+  }
   Serial.print("SVB:INFO ");
   serializeJson(doc, Serial);
   Serial.println();
@@ -218,6 +264,8 @@ static void handleStatus() {
   doc["version"] = FW_VERSION;
   doc["uptime_s"] = (uint32_t)(millis() / 1000);
   doc["rssi"] = WiFi.RSSI();
+  doc["mode"] = cfg.mode;
+  if (cfg.mode == MODE_UPNP) doc["upnp_port"] = upnpPort();
   doc["message"] = "Світло є";
   String body;
   serializeJson(doc, body);
@@ -275,6 +323,11 @@ static void watchWifi() {
     Serial.println("SVB:IP " + WiFi.localIP().toString());
     Serial.printf("Підключено до Wi-Fi, HTTP-сторінка: http://%s:%u/status\n",
                   WiFi.localIP().toString().c_str(), cfg.port);
+    if (cfg.mode == MODE_UPNP) {
+      upnpReset();
+    } else {
+      pushStart();
+    }
   } else if (!connected && wifiConnected) {
     wifiConnected = false;
     wifiLostSince = millis();
@@ -332,5 +385,7 @@ void loop() {
 
   watchWifi();
   if (server) server->handleClient();
+  upnpLoop();
+  pushLoop();
   delay(2);
 }

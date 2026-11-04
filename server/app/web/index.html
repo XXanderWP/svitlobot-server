@@ -21,6 +21,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   .wrap { max-width: 920px; margin: 0 auto; padding: 24px 16px 64px; }
@@ -103,7 +104,7 @@
       </div>
     </div>
     <div class="grid">
-      <div class="tile"><div class="k">Сторінка ESP32</div><div class="v" id="http-res">—</div></div>
+      <div class="tile"><div class="k" id="http-title">Сторінка ESP32</div><div class="v" id="http-res">—</div></div>
       <div class="tile"><div class="k" id="reach-title">Пінг IP</div><div class="v" id="reach-res">—</div></div>
       <div class="tile"><div class="k">Світлобот</div><div class="v" id="svb-res">—</div></div>
       <div class="tile"><div class="k">Telegram</div><div class="v" id="tg-res">—</div></div>
@@ -158,29 +159,52 @@
         <legend>Об'єкт перевірки</legend>
         <div class="row">
           <div>
-            <label for="target_host">Зовнішній IP або домен</label>
-            <input type="text" id="target_host" name="target_host" placeholder="наприклад, 93.170.1.2 або home.example.com">
-            <div class="hint">Публічна адреса вашого роутера (підходить і DDNS).</div>
+            <label for="device_mode">Режим роботи ESP32</label>
+            <select id="device_mode" name="device_mode">
+              <option value="upnp">Проброс порту (UPnP або вручну)</option>
+              <option value="push">ESP32 сам стукає на сервер</option>
+            </select>
+            <div class="hint">Має збігатися з <code>--mode</code>, обраним під час прошивки.</div>
           </div>
           <div>
-            <label for="esp_port">Порт ESP32 (зовнішній)</label>
-            <input type="number" id="esp_port" name="esp_port" min="1" max="65535">
-            <div class="hint">Порт, проброшений на роутері до ESP32.</div>
+            <label for="target_host">Зовнішній IP або домен роутера</label>
+            <input type="text" id="target_host" name="target_host" placeholder="наприклад, 93.170.1.2 або home.example.com">
+            <div class="hint">Цю адресу сервіс пінгує, щоб відрізнити відсутність світла від відсутності інтернету.</div>
           </div>
         </div>
-        <div class="row" style="margin-top:14px">
+        <div class="row" style="margin-top:14px" data-mode="upnp">
+          <div>
+            <label for="esp_ports">Зовнішні порти ESP32</label>
+            <input type="text" id="esp_ports" name="esp_ports" placeholder="18080,18081,18082">
+            <div class="hint">Через кому, як у <code>--upnp-ports</code>. ESP32 відкриває перший вільний, сервер перевіряє всі.</div>
+          </div>
           <div>
             <label for="esp_path">Шлях сторінки</label>
             <input type="text" id="esp_path" name="esp_path">
           </div>
+        </div>
+        <div class="row" style="margin-top:14px" data-mode="push">
           <div>
-            <label for="esp_key">Ключ доступу ESP32</label>
-            <div class="secret">
-              <input type="password" id="esp_key" name="esp_key" data-secret>
-              <button type="button" data-clear="esp_key" title="Очистити">✕</button>
-            </div>
-            <div class="hint">Той самий, що передавали через <code>--key</code>.</div>
+            <label>Адреса для стуків</label>
+            <input type="text" id="hb-url" readonly>
+            <div class="hint">Вкажіть цю адресу і порт під час прошивки: <code>--server</code>, <code>--server-port</code>. Порт має бути відкритий у фаєрволі VPS.</div>
           </div>
+          <div>
+            <label for="push_timeout">Тайм-аут стуку, с</label>
+            <input type="number" id="push_timeout" name="push_timeout" min="10" max="900">
+            <div class="hint">Якщо стуку не було довше — вважаємо, що ESP32 не відповідає (рекомендовано ≥ 3 інтервалів стуку).</div>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <label for="esp_key">Ключ ESP32</label>
+          <div class="secret">
+            <input type="password" id="esp_key" name="esp_key" data-secret>
+            <button type="button" id="gen-key" title="Згенерувати новий ключ">Згенерувати</button>
+            <button type="button" data-clear="esp_key" title="Очистити">✕</button>
+          </div>
+          <div class="hint" data-mode="upnp">Необов'язковий ключ доступу до сторінки — той самий, що в <code>--key</code>.</div>
+          <div class="hint" data-mode="push">Обов'язковий ключ підпису стуків — той самий, що в <code>--key</code> (CLI генерує його, якщо не вказати).
+            Новий ключ треба записати і в ESP32: <code>svitlo-flasher configure --key …</code>.</div>
         </div>
         <div class="row" style="margin-top:14px">
           <div>
@@ -330,6 +354,9 @@ function renderStatus(s) {
   $("state-since").textContent = since;
 
   $("http-res").innerHTML = fmtCheck(s.last_check.http);
+  $("http-title").textContent = s.device.mode === "push" ? "Стуки ESP32" : "Сторінка ESP32";
+  hbPublicPort = s.device.hb_public_port;
+  updateHbUrl();
   $("reach-title").textContent = s.last_check.reach_method === "tcp" ? "TCP-доступність IP" : "Пінг IP";
   $("reach-res").innerHTML = fmtCheck(s.last_check.reach);
   $("last-check").textContent = s.last_check.time ? "Остання перевірка: " + fmtTime(s.last_check.time) : "";
@@ -365,6 +392,31 @@ async function refreshStatus() {
 
 const SOURCE_NAMES = { env: ".env", override: "панель ↺" };
 
+let hbPublicPort = 8081;
+
+function updateHbUrl() {
+  $("hb-url").value = `http://${location.hostname}:${hbPublicPort}/hb`;
+}
+
+function applyMode() {
+  const mode = $("device_mode").value;
+  form.querySelectorAll("[data-mode]").forEach((el) => { el.hidden = el.dataset.mode !== mode; });
+}
+
+$("device_mode").addEventListener("change", applyMode);
+
+$("gen-key").addEventListener("click", () => {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  // hex: ключ не почнеться з «-», тож його можна безпечно передати в --key.
+  const key = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const input = $("esp_key");
+  input.type = "text";
+  input.value = key;
+  clearedSecrets.delete("esp_key");
+  showMsg("save-msg", "Новий ключ згенеровано — збережіть налаштування і запишіть його в ESP32", true);
+});
+
 function labelFor(el) {
   return el.type === "checkbox" ? el.closest("label") : form.querySelector(`label[for="${el.name}"]`);
 }
@@ -397,6 +449,8 @@ function fillForm(cfg) {
     }
   }
   clearedSecrets.clear();
+  $("esp_key").type = "password";
+  applyMode();
 }
 
 async function resetFields(fields) {

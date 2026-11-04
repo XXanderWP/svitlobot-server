@@ -5,12 +5,23 @@ from __future__ import annotations
 import argparse
 import getpass
 import ipaddress
+import secrets
 import sys
 from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .device import DeviceConfig, DeviceError, Session, list_serial_ports
+from .device import (
+    DEFAULT_PUSH_INTERVAL,
+    DEFAULT_SERVER_PORT,
+    DEFAULT_UPNP_PORTS,
+    MODE_PUSH,
+    MODE_UPNP,
+    DeviceConfig,
+    DeviceError,
+    Session,
+    list_serial_ports,
+)
 
 FIRMWARE_NAME = "svitlobot-esp32.bin"
 DEFAULT_FLASH_BAUD = 460800
@@ -21,24 +32,26 @@ DEFAULT_FLASH_BAUD = 460800
 # ---------------------------------------------------------------------------
 
 def info(msg: str) -> None:
-    print(f"• {msg}")
+    print(f"• {msg}", flush=True)
 
 
 def ok(msg: str) -> None:
-    print(f"✔ {msg}")
+    print(f"✔ {msg}", flush=True)
 
 
 def warn(msg: str) -> None:
-    print(f"⚠ {msg}", file=sys.stderr)
+    sys.stdout.flush()
+    print(f"⚠ {msg}", file=sys.stderr, flush=True)
 
 
 def fail(msg: str) -> int:
-    print(f"✖ {msg}", file=sys.stderr)
+    sys.stdout.flush()
+    print(f"✖ {msg}", file=sys.stderr, flush=True)
     return 1
 
 
 def device_log(line: str) -> None:
-    print(f"  [ESP32] {line}")
+    print(f"  [ESP32] {line}", flush=True)
 
 
 def default_firmware_path() -> Path:
@@ -88,6 +101,22 @@ def validate_ip(value: str, name: str) -> str:
         raise DeviceError(f"некоректна адреса {name}: {value}") from exc
 
 
+def parse_ports(text: str) -> list[int]:
+    ports = []
+    for item in text.replace(" ", "").split(","):
+        if not item:
+            continue
+        if not item.isdigit() or not 1 <= int(item) <= 65535:
+            raise DeviceError(f"некоректний порт у --upnp-ports: {item}")
+        if int(item) not in ports:
+            ports.append(int(item))
+    if not ports:
+        raise DeviceError("список --upnp-ports порожній")
+    if len(ports) > 10:
+        raise DeviceError("у --upnp-ports не більше 10 портів")
+    return ports
+
+
 def build_config(args: argparse.Namespace) -> DeviceConfig:
     ssid = args.ssid or ask("Назва Wi-Fi мережі (SSID)")
     if not ssid:
@@ -101,16 +130,41 @@ def build_config(args: argparse.Namespace) -> DeviceConfig:
     if not 1 <= args.http_port <= 65535:
         raise DeviceError("порт має бути в діапазоні 1..65535")
 
+    mode = args.mode
+    upnp_ports = parse_ports(args.upnp_ports)
+    key = args.key or ""
+    server = (args.server or "").strip()
+    if mode == MODE_PUSH:
+        if not server:
+            server = ask("IP або домен сервера (VPS) для стуків")
+        if not server:
+            raise DeviceError("для режиму push потрібна адреса сервера (--server)")
+        if not 1 <= args.server_port <= 65535:
+            raise DeviceError("--server-port має бути в діапазоні 1..65535")
+        if not 5 <= args.push_interval <= 300:
+            raise DeviceError("--push-interval має бути від 5 до 300 секунд")
+        if not key:
+            # hex: ключ не почнеться з «-», тож його можна безпечно передати в --key.
+            key = secrets.token_hex(16)
+            args.generated_key = True
+        elif len(key) < 16:
+            raise DeviceError("для режиму push ключ має містити щонайменше 16 символів")
+
     cfg = DeviceConfig(
         ssid=ssid,
         password=password,
         port=args.http_port,
-        key=args.key or "",
+        key=key,
         hostname=args.hostname,
         ip=validate_ip(args.static_ip or "", "--static-ip"),
         gateway=validate_ip(args.gateway or "", "--gateway"),
         subnet=validate_ip(args.subnet or "", "--subnet"),
         dns=validate_ip(args.dns or "", "--dns"),
+        mode=mode,
+        upnp_ports=",".join(str(p) for p in upnp_ports),
+        server=server,
+        server_port=args.server_port,
+        push_interval=args.push_interval,
     )
     if cfg.ip and not (cfg.gateway and cfg.subnet):
         raise DeviceError("для статичного IP вкажіть також --gateway і --subnet")
@@ -145,7 +199,7 @@ def run_esptool(argv: list[str]) -> None:
         raise DeviceError(f"помилка прошивки: {exc}") from exc
 
 
-def configure_device(port: str, cfg: DeviceConfig, reset_first: bool) -> int:
+def configure_device(port: str, cfg: DeviceConfig, reset_first: bool, generated_key: bool = False) -> int:
     with Session(port, on_log=device_log) as dev:
         if reset_first:
             dev.reset()
@@ -156,23 +210,73 @@ def configure_device(port: str, cfg: DeviceConfig, reset_first: bool) -> int:
         ok("Налаштування збережено, пристрій перезавантажується")
         info(f"Очікування підключення до Wi-Fi «{cfg.ssid}»...")
         ip = dev.wait_for_ip()
+        mode_ok, mode_text, extra = False, "", []
+        if ip:
+            ok(f"ESP32 у мережі: {ip}")
+            if cfg.mode == MODE_UPNP:
+                info("Відкриття порту на роутері через UPnP...")
+            else:
+                info(f"Перший стук на сервер {cfg.server}:{cfg.server_port}...")
+            mode_ok, mode_text, extra = dev.wait_for_mode_result(cfg.mode)
 
     if not ip:
         warn("Пристрій не підключився до Wi-Fi за відведений час.")
         warn("Перевірте SSID і пароль (ESP32 підтримує лише 2,4 ГГц) та запустіть configure ще раз.")
         return 1
 
-    ok(f"ESP32 у мережі: {ip}")
-    url = f"http://{ip}:{cfg.port}/status"
-    if cfg.key:
-        url += "?key=<ваш ключ>"
+    print()
+    if cfg.mode == MODE_UPNP:
+        return report_upnp(ip, cfg, mode_ok, mode_text, extra)
+    return report_push(cfg, mode_ok, mode_text, generated_key)
+
+
+def report_upnp(ip: str, cfg: DeviceConfig, success: bool, text: str, extra: list[str]) -> int:
+    ports_list = cfg.upnp_ports
+    if success:
+        parts = text.split()
+        ext_port = parts[0] if parts else "?"
+        ext_ip = parts[1] if len(parts) > 1 and parts[1] != "-" else "невідомо"
+        ok(f"Роутер відкрив зовнішній порт {ext_port} → {ip}:{cfg.port} (зовнішній IP: {ext_ip})")
+        if extra:
+            warn(f"Зовнішня адреса роутера {extra[0]} — сіра (CGNAT або подвійний NAT).")
+            warn("Ззовні до ESP32 не достукатися, а пінг з VPS дійде до обладнання провайдера, а не до вашого роутера,")
+            warn("тож відрізнити відсутність світла від відсутності інтернету не вийде в жодному режимі.")
+            warn("Потрібен білий (публічний) IP від провайдера.")
+    else:
+        warn(f"UPnP не спрацював: {text}")
+        warn(f"Увімкніть UPnP на роутері або пробросьте вручну один із портів {ports_list} → {ip}:{cfg.port} (TCP).")
+        warn("ESP32 повторюватиме спробу кожні 5 хвилин. Альтернатива без пробросу — --mode push.")
     print()
     print("Що далі:")
-    print(f"  1. Перевірте сторінку в локальній мережі: {url}")
-    print(f"  2. Закріпіть за ESP32 адресу {ip} у DHCP роутера (або використайте --static-ip).")
-    print(f"  3. Пробросьте на роутері зовнішній порт → {ip}:{cfg.port} (TCP).")
-    print("  4. Вкажіть зовнішній IP/домен і порт у веб-інтерфейсі сервісу на VPS.")
-    return 0
+    print(f"  1. Закріпіть за ESP32 адресу {ip} у DHCP роутера (або використайте --static-ip).")
+    print("  2. У веб-панелі на VPS оберіть режим «Проброс порту» і вкажіть:")
+    print(f"     зовнішній IP/домен роутера, порти {ports_list}" + (", ключ ESP32" if cfg.key else "") + ".")
+    print(f"  3. Перевірка в локальній мережі: http://{ip}:{cfg.port}/status" + ("?key=<ключ>" if cfg.key else ""))
+    return 0 if success else 1
+
+
+def report_push(cfg: DeviceConfig, success: bool, text: str, generated_key: bool) -> int:
+    if success:
+        ok(f"Сервер {cfg.server}:{cfg.server_port} прийняв стук")
+    else:
+        warn(f"Стук не пройшов: {text}")
+        if "підпис" in text:
+            warn("Ключ у панелі сервера не збігається з ключем ESP32.")
+        else:
+            warn(f"Перевірте адресу сервера та чи відкрито порт {cfg.server_port} на VPS (фаєрвол).")
+        warn(f"ESP32 продовжить стукати кожні {cfg.push_interval} с.")
+    print()
+    if generated_key:
+        print("Згенеровано ключ підпису стуків (збережіть його):")
+        print(f"  {cfg.key}")
+        print()
+    print("Що далі:")
+    print("  1. У веб-панелі на VPS оберіть режим «ESP32 сам стукає на сервер».")
+    print("  2. Вкажіть у панелі «Ключ ESP32» — той самий, що вище" + (" (згенерований)" if generated_key else "") + ".")
+    print("     Або додайте його в секрет репозиторію ESP_KEY.")
+    print("  3. Вкажіть зовнішній IP/домен роутера — його сервіс пінгуватиме, щоб відрізнити")
+    print("     відсутність світла від відсутності інтернету.")
+    return 0 if success else 1
 
 
 def cmd_flash(args: argparse.Namespace) -> int:
@@ -198,7 +302,7 @@ def cmd_flash(args: argparse.Namespace) -> int:
 
         if cfg is None:
             return 0
-        return configure_device(port, cfg, reset_first=True)
+        return configure_device(port, cfg, reset_first=True, generated_key=getattr(args, "generated_key", False))
     except DeviceError as exc:
         return fail(str(exc))
     except KeyboardInterrupt:
@@ -209,7 +313,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
     try:
         port = resolve_port(args.port)
         cfg = build_config(args)
-        return configure_device(port, cfg, reset_first=args.reset)
+        return configure_device(port, cfg, reset_first=args.reset, generated_key=getattr(args, "generated_key", False))
     except DeviceError as exc:
         return fail(str(exc))
     except KeyboardInterrupt:
@@ -237,9 +341,22 @@ def cmd_info(args: argparse.Namespace) -> int:
         ("hostname", "Ім'я хоста"),
         ("rssi", "Рівень сигналу, дБм"),
         ("mac", "MAC-адреса"),
+        ("mode", "Режим роботи"),
+        ("upnp_ports", "Порти UPnP"),
+        ("upnp_port", "Відкритий порт"),
+        ("upnp_external_ip", "Зовнішній IP (UPnP)"),
+        ("upnp_status", "Стан UPnP"),
+        ("server", "Сервер"),
+        ("server_port", "Порт сервера"),
+        ("push_interval", "Інтервал стуку, с"),
+        ("push_status", "Стан стуку"),
     ]
     for key, label in labels:
+        if key not in data:
+            continue
         value = data.get(key, "")
+        if key == "mode":
+            value = {"upnp": "проброс порту (UPnP)", "push": "стук на сервер"}.get(value, value)
         if isinstance(value, bool):
             value = "так" if value else "ні"
         print(f"{label:22} {value if value != '' else '—'}")
@@ -289,12 +406,24 @@ def add_config_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--ssid", metavar="SSID", help="назва Wi-Fi мережі (2,4 ГГц)")
     g.add_argument("--password", metavar="ПАРОЛЬ", help="пароль Wi-Fi (якщо не вказано — буде запитано)")
     g.add_argument("--http-port", metavar="ПОРТ", type=int, default=8080, help="порт HTTP-сторінки на ESP32 (типово 8080)")
-    g.add_argument("--key", metavar="КЛЮЧ", help="ключ доступу до сторінки (необов'язково, рекомендовано)")
+    g.add_argument("--key", metavar="КЛЮЧ",
+                   help="ключ доступу до сторінки (upnp) або підпису стуків (push; якщо не вказано — згенерується)")
     g.add_argument("--hostname", metavar="ІМ'Я", default="svitlobot", help="ім'я пристрою в мережі (типово svitlobot)")
     g.add_argument("--static-ip", metavar="IP", help="статична IP-адреса ESP32 (необов'язково)")
     g.add_argument("--gateway", metavar="IP", help="шлюз для статичного IP")
     g.add_argument("--subnet", metavar="МАСКА", help="маска підмережі для статичного IP, напр. 255.255.255.0")
     g.add_argument("--dns", metavar="IP", help="DNS-сервер для статичного IP (типово — шлюз)")
+
+    m = p.add_argument_group("режим роботи")
+    m.add_argument("--mode", choices=[MODE_UPNP, MODE_PUSH], default=MODE_UPNP,
+                   help="upnp — ESP32 сам відкриває порт на роутері (типово); push — ESP32 сам стукає на сервер")
+    m.add_argument("--upnp-ports", metavar="ПОРТИ", default=DEFAULT_UPNP_PORTS,
+                   help=f"зовнішні порти-кандидати через кому; береться перший вільний (типово {DEFAULT_UPNP_PORTS})")
+    m.add_argument("--server", metavar="АДРЕСА", help="IP або домен VPS для режиму push")
+    m.add_argument("--server-port", metavar="ПОРТ", type=int, default=DEFAULT_SERVER_PORT,
+                   help=f"порт прийому стуків на VPS (типово {DEFAULT_SERVER_PORT})")
+    m.add_argument("--push-interval", metavar="СЕК", type=int, default=DEFAULT_PUSH_INTERVAL,
+                   help=f"інтервал стуку в секундах (типово {DEFAULT_PUSH_INTERVAL})")
 
 
 _ARGPARSE_UK = {
@@ -334,6 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Приклади:\n"
             "  svitlo-flasher ports\n"
             "  svitlo-flasher flash --ssid МояМережа --key секрет123\n"
+            "  svitlo-flasher flash --ssid МояМережа --mode push --server vps.example.com\n"
             "  svitlo-flasher configure --port COM3 --ssid МояМережа\n"
             "  svitlo-flasher info"
         ),

@@ -4,7 +4,7 @@
 #   обов'язкові: HOST, SSH_USER, SSH_KEY, PROJECT_FOLDER,
 #                PANEL_USERNAME, PANEL_PASSWORD, SVITLOBOT_TOKEN, TARGET_IP
 #   необов'язкові: TELEGRAM_BOT_TOKEN, SVITLOBOT_CHANNEL, SSH_PORT, SSH_KNOWN_HOSTS,
-#                  ESP_PORT, ESP_KEY, WEB_PORT, WEB_BIND
+#                  DEVICE_MODE, ESP_PORTS, ESP_KEY, WEB_PORT, WEB_BIND, HEARTBEAT_PORT, HEARTBEAT_BIND
 #
 # Безпека:
 # - секрети не потрапляють в образ: .env формується тут і передається на сервер по SSH
@@ -65,10 +65,13 @@ jobs:
           TARGET_IP: ${{ secrets.TARGET_IP }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           SVITLOBOT_CHANNEL: ${{ secrets.SVITLOBOT_CHANNEL }}
-          ESP_PORT: ${{ secrets.ESP_PORT }}
+          DEVICE_MODE: ${{ secrets.DEVICE_MODE }}
+          ESP_PORTS: ${{ secrets.ESP_PORTS }}
           ESP_KEY: ${{ secrets.ESP_KEY }}
           WEB_PORT: ${{ secrets.WEB_PORT }}
           WEB_BIND: ${{ secrets.WEB_BIND }}
+          HEARTBEAT_PORT: ${{ secrets.HEARTBEAT_PORT }}
+          HEARTBEAT_BIND: ${{ secrets.HEARTBEAT_BIND }}
         run: python3 .github/scripts/make_env.py "$RUNNER_TEMP/bundle/deploy.env"
 
       - name: Підготовка пакета для сервера
