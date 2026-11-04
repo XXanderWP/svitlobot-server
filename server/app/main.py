@@ -74,7 +74,8 @@ async def lifespan(_: FastAPI):
     hb_task = None
     if HEARTBEAT_LISTEN_PORT:
         hb_app = heartbeat.create_app(monitor.heartbeat_key, monitor.heartbeat_last_ts,
-                                      monitor.accept_heartbeat, monitor.reject_heartbeat)
+                                      monitor.accept_heartbeat, monitor.reject_heartbeat,
+                                      monitor.vps_is_pinging)
         hb_server = _EmbeddedServer(uvicorn.Config(
             hb_app, host="0.0.0.0", port=HEARTBEAT_LISTEN_PORT, lifespan="off",
             access_log=False, log_level="warning",

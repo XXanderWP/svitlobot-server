@@ -16,6 +16,7 @@
 
 #include "config.h"
 #include "mbedtls/md.h"
+#include "svitlobot.h"
 
 #ifndef FW_VERSION
 #define FW_VERSION "0.0.0"
@@ -92,9 +93,12 @@ void sendHeartbeat() {
   http.addHeader("X-Svitlo-Ts", ts);
   http.addHeader("X-Svitlo-Sig", signature);
   int code = http.POST(body);
+  String response = code == 200 ? http.getString() : "";
   http.end();
 
   if (code == 200) {
+    JsonDocument reply;
+    if (!deserializeJson(reply, response)) svitlobotNoteUpstream(reply["upstream"] | false);
     report(true, "сервер прийняв стук");
   } else if (code == 401 || code == 403) {
     report(false, "сервер відхилив підпис — перевірте ключ (HTTP " + String(code) + ")");

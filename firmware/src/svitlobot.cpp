@@ -1,9 +1,11 @@
 /*
- * Резервний пінг Світлобота: ESP32 сам раз на хвилину викликає
+ * Резервний пінг Світлобота: ESP32 сама раз на 3 хвилини викликає
  *   GET https://api.svitlobot.in.ua/channelPing?channel_key=<ключ>
- * так само, як класична прошивка. Пінги з VPS і з ESP32 не заважають одне одному:
- * поки світло є, канал просто отримує пінги з двох джерел; коли світла немає — ESP32
- * знеструмлена й мовчить, а VPS теж припиняє пінги.
+ * але ЛИШЕ тоді, коли VPS не пінгує Світлобот сам. Світлобот приймає не частіше одного
+ * запиту на хвилину на канал (інакше HTTP 429), тому два джерела одночасно заважали б одне одному.
+ * Про те, що VPS пінгує, ESP32 дізнається із заголовка X-Svitlo-Upstream: 1 у перевірках сторінки
+ * (режим upnp) або з поля "upstream" у відповіді на стук (режим push). Якщо такої ознаки не було
+ * понад 7 хвилин — VPS вважається недоступним і ESP32 пінгує сама.
  *
  * Сертифікат сервера не перевіряється (setInsecure): у прошивці немає сховища кореневих
  * сертифікатів, а ключ каналу дає лише право надсилати пінги.
@@ -20,14 +22,18 @@
 namespace {
 
 const char *PING_URL = "https://api.svitlobot.in.ua/channelPing?channel_key=";
-const uint32_t PING_INTERVAL_MS = 60UL * 1000UL;
-const uint32_t FIRST_PING_DELAY_MS = 5000;
+const uint32_t PING_INTERVAL_MS = 3UL * 60UL * 1000UL;
+// Затримка першого пінгу: за цей час VPS встигає перевірити ESP32 і повідомити, що пінгує сам.
+const uint32_t FIRST_PING_DELAY_MS = 90UL * 1000UL;
+const uint32_t UPSTREAM_VALID_MS = 7UL * 60UL * 1000UL;
 
 bool started = false;
 bool lastOk = false;
 bool announced = false;
 String statusText = "вимкнено";
 uint32_t nextAt = 0;
+uint32_t upstreamAt = 0;
+bool upstreamSeen = false;
 
 String urlEncode(const String &value) {
   static const char *hex = "0123456789ABCDEF";
@@ -85,10 +91,20 @@ void svitlobotStart() {
   nextAt = millis() + FIRST_PING_DELAY_MS;
 }
 
+void svitlobotNoteUpstream(bool upstream) {
+  if (!upstream) return;
+  upstreamAt = millis();
+  upstreamSeen = true;
+}
+
 void svitlobotLoop() {
   if (!started || WiFi.status() != WL_CONNECTED) return;
   if ((int32_t)(millis() - nextAt) < 0) return;
   nextAt = millis() + PING_INTERVAL_MS;
+  if (upstreamSeen && millis() - upstreamAt < UPSTREAM_VALID_MS) {
+    report(true, "очікування: VPS сам пінгує Світлобот");
+    return;
+  }
   sendPing();
 }
 

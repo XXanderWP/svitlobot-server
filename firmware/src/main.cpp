@@ -272,6 +272,7 @@ static bool checkAccessKey() {
 
 static void handleStatus() {
   if (!checkAccessKey()) return;
+  svitlobotNoteUpstream(server->header("X-Svitlo-Upstream") == "1");
   JsonDocument doc;
   doc["status"] = "ok";
   doc["device"] = DEVICE_ID;
@@ -299,8 +300,8 @@ static void handleNotFound() {
 
 static void startHttpServer() {
   server = new WebServer(cfg.port);
-  static const char *headerKeys[] = {"X-Svitlo-Key"};
-  server->collectHeaders(headerKeys, 1);
+  static const char *headerKeys[] = {"X-Svitlo-Key", "X-Svitlo-Upstream"};
+  server->collectHeaders(headerKeys, 2);
   server->on("/", HTTP_GET, handleStatus);
   server->on("/status", HTTP_GET, handleStatus);
   server->onNotFound(handleNotFound);

@@ -8,6 +8,13 @@ from app.logic import PowerState
 from app.monitor import Monitor
 
 
+async def ping_now(m):
+    """Пінг без очікування мінімального інтервалу (імітуємо, що минуло ping_interval)."""
+    if m.svb_last_at is not None:
+        m.svb_last_at -= 10_000
+    await m.run_svitlobot_ping()
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     store = ConfigStore(tmp_path / ".env", tmp_path / ".env.override", use_process_env=False)
@@ -52,7 +59,7 @@ async def test_internet_loss_and_restore(env):
 
     await m.run_check()
     assert m.debouncer.confirmed == PowerState.ON
-    await m.run_svitlobot_ping()
+    await ping_now(m)
     assert sent_svb == ["test-key"]
 
     # Зник інтернет
@@ -64,7 +71,7 @@ async def test_internet_loss_and_restore(env):
     assert sent_tg[0][1] is True  # тихе повідомлення
 
     # За політикою keep_last пінги тривають
-    await m.run_svitlobot_ping()
+    await ping_now(m)
     assert len(sent_svb) == 2
 
     # Повторна перевірка в тому ж стані не дублює повідомлення
@@ -79,7 +86,7 @@ async def test_internet_loss_and_restore(env):
     assert sent_tg[1][0].startswith("📶 ") and "Інтернет з'явився" in sent_tg[1][0]
     assert "Його не було" in sent_tg[1][0]
 
-    await m.run_svitlobot_ping()
+    await ping_now(m)
     assert len(sent_svb) == 2  # світла немає — пінг не надсилається
 
 
@@ -182,14 +189,59 @@ async def test_svitlobot_pings_can_be_disabled(env):
     m, net, sent_tg, sent_svb, _, store = env
     assert store.settings.svitlobot_enabled and store.settings.tg_enabled  # типово обидві функції увімкнені
     await m.run_check()
-    await m.run_svitlobot_ping()
+    await ping_now(m)
     assert len(sent_svb) == 1
 
     store.update({"svitlobot_enabled": False})
-    await m.run_svitlobot_ping()
+    await ping_now(m)
     assert len(sent_svb) == 1  # вимкнено — пінгів немає
     assert m.status()["svitlobot"]["switch"] is False
 
     store.update({"svitlobot_enabled": True})
-    await m.run_svitlobot_ping()
+    await ping_now(m)
     assert len(sent_svb) == 2
+
+
+async def test_min_interval_between_pings(env):
+    m, net, _, sent_svb, *_ = env
+    await m.run_check()
+    await m.run_svitlobot_ping()
+    await m.run_svitlobot_ping()  # одразу вдруге (напр. після пробудження) — не надсилається
+    assert len(sent_svb) == 1
+    assert m.store.settings.ping_interval == 180
+    assert 170 < m._next_ping_delay() <= 180
+
+
+async def test_holds_on_state_without_internet(env):
+    """Немає інтернету після «світло є» — VPS продовжує пінгувати (Світлобот тримає «світло є»)."""
+    m, net, _, sent_svb, *_ = env
+    await m.run_check()
+    net.update(http=False, reach=False)
+    for _ in range(3):
+        await m.run_check()
+        await ping_now(m)
+    assert m.debouncer.confirmed == PowerState.UNKNOWN
+    assert len(sent_svb) == 3
+
+
+async def test_holds_off_state_without_internet(env):
+    """Немає інтернету після «світла немає» — пінгів немає (Світлобот тримає «світла немає»)."""
+    m, net, _, sent_svb, *_ = env
+    net.update(http=False, reach=True)
+    await m.run_check()
+    net.update(reach=False)
+    for _ in range(3):
+        await m.run_check()
+        await ping_now(m)
+    assert m.debouncer.confirmed == PowerState.UNKNOWN
+    assert sent_svb == []
+
+
+async def test_upstream_flag(env):
+    m, *_rest, store = env
+    assert m.vps_is_pinging()
+    m.svb_last_ok = False  # пінги з VPS не проходять — нехай пінгує ESP32
+    assert not m.vps_is_pinging()
+    m.svb_last_ok = True
+    store.update({"svitlobot_enabled": False})
+    assert not m.vps_is_pinging()

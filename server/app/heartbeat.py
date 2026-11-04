@@ -64,7 +64,8 @@ def verify(key: str, ts_header: str | None, sig_header: str | None, body: bytes,
 
 def create_app(get_key: Callable[[], str], get_last_ts: Callable[[], Optional[int]],
                on_accept: Callable[[Verification, str], None],
-               on_reject: Callable[[str, str], None]) -> FastAPI:
+               on_reject: Callable[[str, str], None],
+               get_upstream: Callable[[], bool] = lambda: False) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.post("/hb")
@@ -80,7 +81,8 @@ def create_app(get_key: Callable[[], str], get_last_ts: Callable[[], Optional[in
             on_reject(result.reason, client_ip)
             return JSONResponse({"ok": False, "error": result.reason}, status_code=401)
         on_accept(result, client_ip)
-        return JSONResponse({"ok": True})
+        # upstream: VPS сам пінгує Світлобот — резервний пінг з ESP32 не потрібен.
+        return JSONResponse({"ok": True, "upstream": get_upstream()})
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

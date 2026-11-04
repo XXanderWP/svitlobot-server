@@ -29,6 +29,8 @@ from .logic import (
 log = logging.getLogger(__name__)
 
 MAX_EVENTS = 200
+# Ручний тестовий пінг — не частіше, ніж дозволяє Світлобот (раз на хвилину).
+MANUAL_PING_MIN_GAP = 65
 NOTIFY_RETRY_SECONDS = 60
 
 
@@ -219,7 +221,7 @@ class Monitor:
                 raise
             except Exception:
                 log.exception("Помилка в циклі пінгів Світлобота")
-            await self._sleep(self._wake_ping, self.store.settings.ping_interval)
+            await self._sleep(self._wake_ping, self._next_ping_delay())
 
     # ------------------------------------------------------------------
     # Перевірки
@@ -266,7 +268,7 @@ class Monitor:
 
         (http_res, port), reach_res = await asyncio.gather(
             checks.check_http_ports(self._client, s.target_host, s.esp_port_list, self.esp_good_port,
-                                    s.esp_path, s.esp_key, s.http_timeout),
+                                    s.esp_path, s.esp_key, s.http_timeout, upstream=self.vps_is_pinging()),
             reach_coro,
         )
         if port and port != self.esp_good_port:
@@ -470,6 +472,9 @@ class Monitor:
         s = self.store.settings
         if not s.svitlobot_key:
             return False, "не задано ключ"
+        if self.svb_last_at is not None and time.time() - self.svb_last_at < MANUAL_PING_MIN_GAP:
+            wait = int(MANUAL_PING_MIN_GAP - (time.time() - self.svb_last_at))
+            return False, f"останній пінг був щойно — Світлобот приймає не частіше разу на хвилину, спробуйте через {wait} с"
         assert self._client is not None
         ok, detail = await svitlobot.send_ping(self._client, s.svitlobot_url, s.svitlobot_key)
         self.svb_last_at = time.time()
@@ -481,6 +486,18 @@ class Monitor:
     # Світлобот
     # ------------------------------------------------------------------
 
+    def _next_ping_delay(self) -> float:
+        """Скільки чекати до наступного пінгу, щоб між пінгами було не менше ping_interval."""
+        interval = self.store.settings.ping_interval
+        if self.svb_last_at is None:
+            return interval
+        return max(1.0, interval - (time.time() - self.svb_last_at))
+
+    def vps_is_pinging(self) -> bool:
+        """Чи бере VPS на себе пінги Світлобота (тоді резервний пінг з ESP32 не потрібен)."""
+        s = self.store.settings
+        return s.svitlobot_enabled and bool(s.svitlobot_key) and self.svb_last_ok is not False
+
     async def run_svitlobot_ping(self) -> None:
         s = self.store.settings
         if not s.svitlobot_enabled or not s.svitlobot_key:
@@ -488,6 +505,9 @@ class Monitor:
             return
         self.svb_active = should_ping_svitlobot(self.debouncer.confirmed, self.last_known_power, s.unknown_policy)
         if not self.svb_active:
+            return
+        # Пробудження (зміна стану, збереження налаштувань) не має порушувати мінімальний інтервал.
+        if self.svb_last_at is not None and time.time() - self.svb_last_at < s.ping_interval - 1:
             return
         assert self._client is not None
         ok, detail = await svitlobot.send_ping(self._client, s.svitlobot_url, s.svitlobot_key)

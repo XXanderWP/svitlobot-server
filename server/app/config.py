@@ -47,7 +47,9 @@ class Settings(BaseModel):
     svitlobot_enabled: bool = True
     svitlobot_key: str = ""
     svitlobot_url: str = DEFAULT_SVITLOBOT_URL
-    ping_interval: int = Field(60, ge=10, le=600)
+    # Світлобот приймає не частіше одного запиту на хвилину на канал (інакше HTTP 429),
+    # тому інтервал — щонайменше 3 хвилини: з запасом і з урахуванням резервного пінгу з ESP32.
+    ping_interval: int = Field(180, ge=180, le=900)
 
     # Режим роботи ESP32: upnp — сервер сам звертається до сторінки ESP32 (порт відкрито через
     # UPnP або вручну); push — ESP32 сам стукає на сервер.

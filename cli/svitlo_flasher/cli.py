@@ -245,14 +245,8 @@ def configure_device(port: str, cfg: DeviceConfig, reset_first: bool, generated_
                 info(f"Перший стук на сервер {cfg.server}:{cfg.server_port}...")
             mode_ok, mode_text, extra = dev.wait_for_mode_result(cfg.mode)
             if cfg.svitlobot_key:
-                info("Резервний пінг Світлобота з ESP32...")
-                svb = dev.wait_for_svitlobot()
-                if svb is None:
-                    warn("ESP32 не повідомила результат пінгу Світлобота (перевірте пізніше: svitlo-flasher info)")
-                elif svb[0]:
-                    ok(f"Світлобот: {svb[1]}")
-                else:
-                    warn(f"Світлобот: {svb[1]}")
+                info("Резервний пінг Світлобота увімкнено: ESP32 пінгуватиме раз на 3 хвилини, "
+                     "лише коли VPS не пінгує сам (перший — приблизно через 90 с; стан: svitlo-flasher info)")
             elif cfg.svitlobot_key == "":
                 info("Резервний пінг Світлобота з ESP32 вимкнено")
 

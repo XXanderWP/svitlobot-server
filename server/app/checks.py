@@ -32,10 +32,15 @@ def _host_for_url(host: str) -> str:
 
 
 async def check_http(client: httpx.AsyncClient, host: str, port: int, path: str,
-                     key: str, timeout: float) -> CheckResult:
-    """Звертається до сторінки ESP32. Успіх — лише якщо відповіла саме наша прошивка."""
+                     key: str, timeout: float, upstream: bool = False) -> CheckResult:
+    """Звертається до сторінки ESP32. Успіх — лише якщо відповіла саме наша прошивка.
+
+    upstream=True повідомляє ESP32 (заголовок X-Svitlo-Upstream), що VPS сам пінгує Світлобот,
+    і резервний пінг з ESP32 не потрібен — так канал не отримує зайвих запитів (HTTP 429).
+    """
     url = f"http://{_host_for_url(host)}:{port}{path}"
     headers = {"X-Svitlo-Key": key} if key else {}
+    headers["X-Svitlo-Upstream"] = "1" if upstream else "0"
     started = time.perf_counter()
     try:
         resp = await client.get(url, headers=headers, timeout=timeout)
@@ -118,14 +123,15 @@ async def check_tcp(host: str, port: int, timeout: float) -> CheckResult:
 
 
 async def check_http_ports(client: httpx.AsyncClient, host: str, ports: list[int], preferred: int | None,
-                           path: str, key: str, timeout: float) -> tuple[CheckResult, int | None]:
+                           path: str, key: str, timeout: float,
+                           upstream: bool = False) -> tuple[CheckResult, int | None]:
     """Перевіряє сторінку ESP32 на кількох зовнішніх портах одночасно.
 
     ESP32 відкриває через UPnP перший вільний порт зі списку, тому сервер пробує всі.
     Повертає результат і порт, на якому відповіла прошивка (успіх на `preferred` має пріоритет).
     """
     order = sorted(ports, key=lambda p: p != preferred)
-    results = await asyncio.gather(*(check_http(client, host, p, path, key, timeout) for p in order))
+    results = await asyncio.gather(*(check_http(client, host, p, path, key, timeout, upstream) for p in order))
     for port, res in zip(order, results):
         if res.ok:
             res.detail = f"порт {port}: {res.detail}"
