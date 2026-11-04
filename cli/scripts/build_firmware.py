@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Збирає прошивку PlatformIO і створює об'єднаний образ для svitlo-flasher.
+"""Збирає прошивку PlatformIO і створює об'єднані образи для svitlo-flasher.
 
 Використання:  python cli/scripts/build_firmware.py
 Потрібно:      PlatformIO (pip install platformio) та esptool.
-Результат:     cli/svitlo_flasher/firmware/svitlobot-esp32.bin (запис за адресою 0x0)
+Результат:     cli/svitlo_flasher/firmware/svitlobot-<чип>.bin (запис за адресою 0x0)
 """
 
 from __future__ import annotations
@@ -16,9 +16,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE_DIR = ROOT / "firmware"
-ENV = "esp32dev"
-BUILD_DIR = FIRMWARE_DIR / ".pio" / "build" / ENV
-OUTPUT = ROOT / "cli" / "svitlo_flasher" / "firmware" / "svitlobot-esp32.bin"
+OUTPUT_DIR = ROOT / "cli" / "svitlo_flasher" / "firmware"
+
+# Середовище PlatformIO → (чип esptool, адреса завантажувача, режим flash, розмір flash, файл образу)
+TARGETS = {
+    "esp32dev": ("esp32", "0x1000", "dio", "4MB", "svitlobot-esp32.bin"),
+    "esp32s3": ("esp32s3", "0x0", "dio", "4MB", "svitlobot-esp32s3.bin"),
+}
 
 
 def find_pio() -> list[str]:
@@ -38,27 +42,39 @@ def find_boot_app0() -> Path:
 
 
 def main() -> None:
-    print("• Збирання прошивки PlatformIO...")
-    subprocess.run(find_pio() + ["run", "-e", ENV], cwd=FIRMWARE_DIR, check=True)
+    envs = sys.argv[1:] or list(TARGETS)
+    for env in envs:
+        if env not in TARGETS:
+            sys.exit(f"Невідоме середовище: {env}. Доступні: {', '.join(TARGETS)}")
 
-    parts = {
-        "0x1000": BUILD_DIR / "bootloader.bin",
-        "0x8000": BUILD_DIR / "partitions.bin",
-        "0xe000": find_boot_app0(),
-        "0x10000": BUILD_DIR / "firmware.bin",
-    }
-    for path in parts.values():
-        if not path.is_file():
-            sys.exit(f"Не знайдено файл збирання: {path}")
+    print(f"• Збирання прошивки PlatformIO: {', '.join(envs)}...")
+    cmd = find_pio() + ["run"]
+    for env in envs:
+        cmd += ["-e", env]
+    subprocess.run(cmd, cwd=FIRMWARE_DIR, check=True)
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "esptool", "--chip", "esp32", "merge_bin",
-           "-o", str(OUTPUT), "--flash_mode", "dio", "--flash_size", "4MB"]
-    for offset, path in parts.items():
-        cmd += [offset, str(path)]
-    print("• Об'єднання образу...")
-    subprocess.run(cmd, check=True)
-    print(f"✔ Готово: {OUTPUT}")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    boot_app0 = find_boot_app0()
+    for env in envs:
+        chip, bootloader_addr, flash_mode, flash_size, name = TARGETS[env]
+        build_dir = FIRMWARE_DIR / ".pio" / "build" / env
+        parts = {
+            bootloader_addr: build_dir / "bootloader.bin",
+            "0x8000": build_dir / "partitions.bin",
+            "0xe000": boot_app0,
+            "0x10000": build_dir / "firmware.bin",
+        }
+        for path in parts.values():
+            if not path.is_file():
+                sys.exit(f"Не знайдено файл збирання: {path}")
+        output = OUTPUT_DIR / name
+        merge = [sys.executable, "-m", "esptool", "--chip", chip, "merge_bin", "-o", str(output),
+                 "--flash_mode", flash_mode, "--flash_size", flash_size]
+        for offset, path in parts.items():
+            merge += [offset, str(path)]
+        print(f"• Об'єднання образу {name}...")
+        subprocess.run(merge, check=True, stdout=subprocess.DEVNULL)
+        print(f"✔ Готово: {output}")
 
 
 if __name__ == "__main__":

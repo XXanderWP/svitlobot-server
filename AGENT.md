@@ -68,7 +68,9 @@
 
 ### 1. Прошивка ESP32 (`firmware/`)
 
-- PlatformIO + фреймворк Arduino, плата `esp32dev` (класичний ESP32).
+- PlatformIO + фреймворк Arduino, два середовища: `esp32dev` (класичний ESP32) і `esp32s3` (ESP32-S3,
+  образ для 4 МБ flash у режимі **DIO** — у режимі QIO завантажувач S3 зациклюється з `ets_loader.c 78`;
+  `Serial` — UART0 через USB-UART міст, `ARDUINO_USB_CDC_ON_BOOT=0`).
 - Файли: `main.cpp` (налаштування, UART-протокол, Wi-Fi, HTTP), `config.h` (спільна структура `Config`),
   `upnp.cpp` (власний мінімальний клієнт UPnP IGD: SSDP → опис → SOAP), `push.cpp` (стуки з HMAC).
 - Налаштування (Wi-Fi, режим, порти, ключ, сервер, статичний IP) зберігаються в NVS (`Preferences`, простір імен `svb`). У прошивці **немає** зашитих паролів.
@@ -101,7 +103,8 @@
 - Команда `svitlo-flasher` з підкомандами: `ports`, `flash`, `configure`, `info`, `reset-config`, `monitor`.
 - Режим обирається `--mode upnp|push` (типово upnp); для push без `--key` ключ генерується (hex).
   Після налаштування CLI чекає `SVB:UPNP …` / `SVB:PUSH …` і пояснює результат.
-- `flash` записує об'єднаний образ `svitlo_flasher/firmware/svitlobot-esp32.bin` за адресою `0x0`, потім передає налаштування по UART.
+- `flash` визначає чип (esptool), записує відповідний об'єднаний образ `svitlo_flasher/firmware/svitlobot-<чип>.bin`
+  (`esp32`, `esp32s3`) за адресою `0x0`, потім передає налаштування по UART.
 - Образ прошивки готує `cli/scripts/build_firmware.py` (запускає `pio run` і `esptool merge_bin`). Сам `.bin` у git не комітиться — його збирає CI (`.github/workflows/release.yml`) або розробник локально.
 
 ### 3. Сервіс моніторингу (`server/`)

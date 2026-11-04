@@ -23,7 +23,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: firmware
-          path: cli/svitlo_flasher/firmware/svitlobot-esp32.bin
+          path: cli/svitlo_flasher/firmware/*.bin
 
   cli:
     name: CLI для ${{ matrix.name }}
@@ -55,6 +55,7 @@ jobs:
           pyinstaller --onefile --name svitlo-flasher-${{ matrix.name }}
           --collect-data esptool
           --add-data "svitlo_flasher/firmware/svitlobot-esp32.bin${{ matrix.sep }}svitlo_flasher/firmware"
+          --add-data "svitlo_flasher/firmware/svitlobot-esp32s3.bin${{ matrix.sep }}svitlo_flasher/firmware"
           entry.py
       - uses: actions/upload-artifact@v4
         with:

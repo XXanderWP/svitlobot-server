@@ -23,8 +23,13 @@ from .device import (
     list_serial_ports,
 )
 
-FIRMWARE_NAME = "svitlobot-esp32.bin"
 DEFAULT_FLASH_BAUD = 460800
+
+# Назва чипа з esptool → (аргумент --chip, файл образу)
+SUPPORTED_CHIPS = {
+    "ESP32": ("esp32", "svitlobot-esp32.bin"),
+    "ESP32-S3": ("esp32s3", "svitlobot-esp32s3.bin"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +59,29 @@ def device_log(line: str) -> None:
     print(f"  [ESP32] {line}", flush=True)
 
 
-def default_firmware_path() -> Path:
+def firmware_dir() -> Path:
     # Працює і для звичайного встановлення, і для зібраного PyInstaller-файлу.
-    return Path(__file__).resolve().parent / "firmware" / FIRMWARE_NAME
+    return Path(__file__).resolve().parent / "firmware"
+
+
+def detect_chip(port: str) -> tuple[str, str]:
+    """Визначає чип на порту. Повертає (аргумент --chip для esptool, файл образу)."""
+    from esptool.cmds import detect_chip as esptool_detect
+
+    info("Визначення типу чипа...")
+    try:
+        esp = esptool_detect(port)
+    except Exception as exc:
+        raise DeviceError(f"не вдалося зв'язатися з чипом: {exc}") from exc
+    name = esp.CHIP_NAME
+    try:
+        esp._port.close()
+    except Exception:
+        pass
+    if name not in SUPPORTED_CHIPS:
+        raise DeviceError(f"чип {name} не підтримується (підтримуються: {', '.join(SUPPORTED_CHIPS)})")
+    ok(f"Чип: {name}")
+    return SUPPORTED_CHIPS[name]
 
 
 # ---------------------------------------------------------------------------
@@ -280,18 +305,20 @@ def report_push(cfg: DeviceConfig, success: bool, text: str, generated_key: bool
 
 
 def cmd_flash(args: argparse.Namespace) -> int:
-    firmware = Path(args.firmware) if args.firmware else default_firmware_path()
-    if not firmware.is_file():
-        return fail(
-            f"не знайдено образ прошивки: {firmware}\n"
-            "  Завантажте його з релізу або зберіть: python cli/scripts/build_firmware.py\n"
-            "  Також можна вказати шлях вручну: --firmware шлях/до/файлу.bin"
-        )
     try:
         port = resolve_port(args.port)
         cfg = None if args.no_config else build_config(args)
 
-        esptool_args = ["--chip", "esp32", "--port", port, "--baud", str(args.baud),
+        chip, image_name = detect_chip(port)
+        firmware = Path(args.firmware) if args.firmware else firmware_dir() / image_name
+        if not firmware.is_file():
+            return fail(
+                f"не знайдено образ прошивки: {firmware}\n"
+                "  Завантажте його з релізу або зберіть: python cli/scripts/build_firmware.py\n"
+                "  Також можна вказати шлях вручну: --firmware шлях/до/файлу.bin"
+            )
+
+        esptool_args = ["--chip", chip, "--port", port, "--baud", str(args.baud),
                         "write_flash", "-z"]
         if args.erase:
             esptool_args.append("--erase-all")
@@ -486,7 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = subparser("flash", "записати прошивку на ESP32 і передати налаштування Wi-Fi")
     add_port_arg(p)
-    p.add_argument("--firmware", metavar="ФАЙЛ", help=f"шлях до образу прошивки (типово вбудований {FIRMWARE_NAME})")
+    p.add_argument("--firmware", metavar="ФАЙЛ", help="шлях до образу прошивки (типово вбудований, за типом чипа)")
     p.add_argument("--baud", metavar="ШВИДКІСТЬ", type=int, default=DEFAULT_FLASH_BAUD, help=f"швидкість прошивки (типово {DEFAULT_FLASH_BAUD})")
     p.add_argument("--erase", action="store_true", help="повністю стерти flash перед записом")
     p.add_argument("--no-config", action="store_true", help="лише записати прошивку, без налаштувань")
