@@ -46,7 +46,11 @@ echo "• Збирання образу та перезапуск контейн
 # --force-recreate: контейнер перечитає новий .env навіть без змін у коді.
 # --env-file compose.env: Compose не читає .env із секретами (див. make_env.py).
 # Старий контейнер міг бути без порту стуків — --force-recreate застосує нову конфігурацію.
-docker compose --env-file compose.env up -d --build --force-recreate --remove-orphans --quiet-pull
+if ! docker compose --env-file compose.env up -d --build --force-recreate --remove-orphans --quiet-pull; then
+  echo "::error::Не вдалося запустити контейнер. Якщо в помилці вище «port is already allocated» — порт уже зайнятий"
+  echo "::error::іншою програмою на сервері: задайте інші порти в секретах WEB_PORT (панель) та/або HEARTBEAT_PORT (стуки)."
+  exit 1
+fi
 
 echo "• Очікування перевірки стану контейнера..."
 for i in $(seq 1 45); do
