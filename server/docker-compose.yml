@@ -1,0 +1,38 @@
+# Сервіс моніторингу SvitloBot Monitor.
+#
+# Налаштування:
+#   .env                — базові значення (на сервері його формує GitHub Action із секретів);
+#   data/.env.override  — зміни з веб-панелі, мають пріоритет над .env.
+# Обидва файли читає сам застосунок; у змінні оточення контейнера секрети не потрапляють
+# (тому їх не видно в `docker inspect`), а в образ вони не копіюються (.dockerignore).
+#
+# Ручний запуск: cp .env.example .env && nano .env && docker compose up -d --build
+services:
+  svitlobot-monitor:
+    build: .
+    image: svitlobot-monitor:latest
+    container_name: svitlobot-monitor
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Kyiv}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENV_FILE: /config/.env
+    ports:
+      # WEB_BIND=127.0.0.1 у .env — панель доступна лише через SSH-тунель або реверс-проксі.
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /config/.env
+        read_only: true
+        bind:
+          create_host_path: false   # без .env контейнер не стартує (а не створює порожню теку)
+      - ./data:/data
+    # NET_RAW потрібен для ICMP-пінгу (у Docker він увімкнений типово, вказуємо явно).
+    cap_add:
+      - NET_RAW
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

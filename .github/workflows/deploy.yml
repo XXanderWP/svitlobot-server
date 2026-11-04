@@ -1,0 +1,137 @@
+# Деплой сервісу моніторингу на сервер при кожному пуші в main.
+#
+# Секрети репозиторію (Settings → Secrets and variables → Actions):
+#   обов'язкові: HOST, SSH_USER, SSH_KEY, PROJECT_FOLDER,
+#                PANEL_USERNAME, PANEL_PASSWORD, SVITLOBOT_TOKEN, TARGET_IP
+#   необов'язкові: TELEGRAM_BOT_TOKEN, SVITLOBOT_CHANNEL, SSH_PORT, SSH_KNOWN_HOSTS,
+#                  ESP_PORT, ESP_KEY, WEB_PORT, WEB_BIND
+#
+# Безпека:
+# - секрети не потрапляють в образ: .env формується тут і передається на сервер по SSH
+#   разом із кодом, образ збирається без нього (.dockerignore);
+# - жоден крок не виводить значень секретів (немає `set -x`, `cat .env`, `docker compose config`,
+#   логів контейнера); GitHub додатково маскує значення секретів у виводі;
+# - секрети передаються в кроки лише через `env:`, а не підставляються в текст команд.
+name: Деплой
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Тести та збирання образу
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/requirements-dev.txt
+
+      - name: Встановлення залежностей
+        run: pip install -r server/requirements-dev.txt
+
+      - name: Тести
+        working-directory: server
+        run: python -m pytest -q
+
+      - name: Перевірка збирання Docker-образу
+        run: docker build --quiet --tag svitlobot-monitor:ci server > /dev/null && echo "✔ Образ збирається"
+
+  deploy:
+    name: Розгортання на сервері
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Формування .env із секретів
+        env:
+          PANEL_USERNAME: ${{ secrets.PANEL_USERNAME }}
+          PANEL_PASSWORD: ${{ secrets.PANEL_PASSWORD }}
+          SVITLOBOT_TOKEN: ${{ secrets.SVITLOBOT_TOKEN }}
+          TARGET_IP: ${{ secrets.TARGET_IP }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SVITLOBOT_CHANNEL: ${{ secrets.SVITLOBOT_CHANNEL }}
+          ESP_PORT: ${{ secrets.ESP_PORT }}
+          ESP_KEY: ${{ secrets.ESP_KEY }}
+          WEB_PORT: ${{ secrets.WEB_PORT }}
+          WEB_BIND: ${{ secrets.WEB_BIND }}
+        run: python3 .github/scripts/make_env.py "$RUNNER_TEMP/bundle/deploy.env"
+
+      - name: Підготовка пакета для сервера
+        run: |
+          git archive HEAD server | tar -x -C "$RUNNER_TEMP/bundle"
+          rm -rf "$RUNNER_TEMP/bundle/server/tests"
+          cp .github/scripts/remote_deploy.sh "$RUNNER_TEMP/bundle/"
+          tar -czf "$RUNNER_TEMP/bundle.tgz" -C "$RUNNER_TEMP/bundle" .
+          echo "✔ Пакет готовий"
+
+      - name: Налаштування SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          for name in SSH_KEY SSH_HOST SSH_USER; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Не задано секрет ${name/SSH_HOST/HOST}"
+              exit 1
+            fi
+          done
+          install -m 700 -d ~/.ssh
+          ( umask 077; printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key )
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            ( umask 077; printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts )
+            host_check=yes
+          else
+            echo "::warning::Секрет SSH_KNOWN_HOSTS не задано — ключ сервера не перевіряється (рекомендовано додати вивід ssh-keyscan)"
+            host_check=accept-new
+          fi
+          ( umask 077; cat > ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName ${SSH_HOST}
+            User ${SSH_USER}
+            Port ${SSH_PORT:-22}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking ${host_check}
+            UserKnownHostsFile ~/.ssh/known_hosts
+            LogLevel ERROR
+            ServerAliveInterval 30
+            ConnectTimeout 20
+          EOF
+          )
+          echo "✔ SSH налаштовано"
+
+      - name: Розгортання
+        env:
+          PROJECT_FOLDER: ${{ secrets.PROJECT_FOLDER }}
+        run: |
+          if [ -z "$PROJECT_FOLDER" ]; then
+            echo "::error::Не задано секрет PROJECT_FOLDER"
+            exit 1
+          fi
+          folder_q="$(printf '%q' "$PROJECT_FOLDER")"
+          # Пакет (код + .env) передається через stdin зашифрованого SSH-з'єднання
+          # у тимчасову теку з правами 700, яка видаляється після деплою.
+          ssh deploy-target "set -e; d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; tar -xzf - -C \"\$d\"; bash \"\$d/remote_deploy.sh\" \"\$d\" ${folder_q}" \
+            < "$RUNNER_TEMP/bundle.tgz"
+
+      - name: Прибирання
+        if: always()
+        run: rm -rf ~/.ssh "$RUNNER_TEMP/bundle" "$RUNNER_TEMP/bundle.tgz"

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# PlatformIO
+firmware/.pio/
+
+# Зібраний образ прошивки (збирається скриптом або CI)
+cli/svitlo_flasher/firmware/*.bin
+
+# Секрети та дані сервера
+server/.env
+server/.env.override
+server/compose.env
+server/data/
+.env
+
+# Системне
+.DS_Store

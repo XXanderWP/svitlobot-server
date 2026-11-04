@@ -1,0 +1,10 @@
+# Секрети та дані не мають потрапляти в образ
+.env
+.env.*
+compose.env
+data/
+tests/
+__pycache__/
+.pytest_cache/
+requirements-dev.txt
+docker-compose.yml

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "svitlo-flasher"
+version = "0.1.0"
+description = "Утиліта для прошивки та налаштування ESP32 для SvitloBot Monitor"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "esptool>=4.7,<5",
+    "pyserial>=3.5",
+]
+
+[project.scripts]
+svitlo-flasher = "svitlo_flasher.cli:main"
+
+[tool.setuptools]
+packages = ["svitlo_flasher"]
+
+[tool.setuptools.package-data]
+svitlo_flasher = ["firmware/*.bin"]

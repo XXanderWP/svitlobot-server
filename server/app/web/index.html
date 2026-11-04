@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SvitloBot Monitor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💡</text></svg>">
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #6b7385; --border: #dde1e8;
+    --accent: #2f6fde; --accent-text: #ffffff;
+    --on: #1f9d55; --off: #d64545; --unknown: #c98a12; --none: #8a93a6;
+    --input: #ffffff; --code: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #9aa3b5; --border: #2c3340;
+      --accent: #5b8ff0; --accent-text: #0d1117;
+      --on: #3fbf74; --off: #ef6b6b; --unknown: #e3a83a; --none: #6f788a;
+      --input: #141820; --code: #232a35;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 17px; margin: 0 0 14px; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .state { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .dot { width: 56px; height: 56px; border-radius: 50%; background: var(--none); flex: none;
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--none) 20%, transparent); }
+  .dot.on { background: var(--on); box-shadow: 0 0 0 6px color-mix(in srgb, var(--on) 22%, transparent); }
+  .dot.off { background: var(--off); box-shadow: 0 0 0 6px color-mix(in srgb, var(--off) 22%, transparent); }
+  .dot.unknown { background: var(--unknown); box-shadow: 0 0 0 6px color-mix(in srgb, var(--unknown) 22%, transparent); }
+  .state-label { font-size: 26px; font-weight: 650; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 18px; }
+  .tile { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .tile .k { font-size: 13px; color: var(--muted); }
+  .tile .v { font-weight: 600; }
+  .ok { color: var(--on); } .bad { color: var(--off); } .warn { color: var(--unknown); }
+  fieldset { border: none; padding: 0; margin: 0 0 22px; }
+  legend { font-weight: 650; font-size: 16px; margin-bottom: 10px; padding: 0; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--input); color: var(--text); font: inherit; }
+  textarea { min-height: 72px; resize: vertical; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--text); margin: 6px 0; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+  .secret { display: flex; gap: 6px; }
+  .secret input { flex: 1; }
+  button { font: inherit; border-radius: 8px; padding: 9px 16px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .6; cursor: default; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .msg { font-size: 14px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .events { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
+  .events li { padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 14px; display: flex; gap: 10px; }
+  .events li:last-child { border-bottom: none; }
+  .events time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .events .warn { color: var(--unknown); } .events .error { color: var(--off); }
+  .banner { border-left: 4px solid var(--unknown); }
+  .src { display: inline-block; font-size: 11px; line-height: 1; padding: 3px 6px; border-radius: 999px;
+    margin-left: 6px; vertical-align: 1px; border: 1px solid var(--border); color: var(--muted); background: transparent; }
+  .src.override { border-color: var(--accent); color: var(--accent); cursor: pointer; }
+  .src.override:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .diag { list-style: none; margin: 14px 0 0; padding: 0; }
+  .diag li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: start;
+    padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .diag li:last-child { border-bottom: none; }
+  .diag .t { font-weight: 600; font-size: 14px; }
+  .diag .d { font-size: 13.5px; color: var(--muted); }
+  .diag .i-ok { color: var(--on); } .diag .i-error { color: var(--off); }
+  .diag .i-warn { color: var(--unknown); } .diag .i-skip { color: var(--none); }
+  .note { font-size: 13.5px; color: var(--muted); margin: -6px 0 18px; }
+  @media (max-width: 520px) { .state-label { font-size: 22px; } .dot { width: 44px; height: 44px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>💡 SvitloBot Monitor</h1>
+    <span class="muted" id="version"></span>
+  </header>
+
+  <div class="card banner" id="setup-banner" hidden>
+    <strong>Сервіс ще не налаштовано.</strong>
+    <span class="muted">Вкажіть адресу об'єкта та ключ каналу Світлобота нижче.</span>
+  </div>
+
+  <section class="card">
+    <div class="state">
+      <div class="dot" id="dot"></div>
+      <div>
+        <div class="state-label" id="state-label">Завантаження…</div>
+        <div class="muted" id="state-since"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="tile"><div class="k">Сторінка ESP32</div><div class="v" id="http-res">—</div></div>
+      <div class="tile"><div class="k" id="reach-title">Пінг IP</div><div class="v" id="reach-res">—</div></div>
+      <div class="tile"><div class="k">Світлобот</div><div class="v" id="svb-res">—</div></div>
+      <div class="tile"><div class="k">Telegram</div><div class="v" id="tg-res">—</div></div>
+    </div>
+    <div class="actions" style="margin-top:16px">
+      <button id="check-now">Перевірити зараз</button>
+      <span class="muted msg" id="last-check"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Перевірка налаштувань</h2>
+    <div class="note" style="margin:0">Перевіряє доступність ESP32 та IP, ключ Світлобота, токен бота й права бота в каналі.</div>
+    <div class="actions" style="margin-top:12px">
+      <button class="primary" id="diag-run">Перевірити все</button>
+      <span class="muted msg" id="diag-msg"></span>
+    </div>
+    <ul class="diag" id="diag" hidden></ul>
+  </section>
+
+  <section class="card">
+    <h2>Налаштування</h2>
+    <div class="note">
+      Початкові значення приходять із <code>.env</code> на сервері (його формує GitHub Action із секретів).
+      Те, що ви змінюєте тут, зберігається в <code>.env.override</code> і має пріоритет.
+      Мітка <span class="src">.env</span> — значення з файлу, <span class="src override" style="cursor:default">панель ↺</span> — змінено тут
+      (натисніть, щоб повернути значення з <code>.env</code>).
+    </div>
+    <form id="cfg" autocomplete="off">
+      <fieldset>
+        <legend>Світлобот</legend>
+        <label class="check"><input type="checkbox" name="svitlobot_enabled"> Надсилати статус у Світлобот</label>
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label for="svitlobot_key">Ключ каналу (channel_key)</label>
+            <div class="secret"><input type="password" id="svitlobot_key" name="svitlobot_key" data-secret></div>
+            <div class="hint">Видається ботом Світлобота під час створення каналу.</div>
+          </div>
+          <div>
+            <label for="ping_interval">Інтервал пінгів, с</label>
+            <input type="number" id="ping_interval" name="ping_interval" min="10" max="600">
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <label for="svitlobot_url">URL API (шаблон з <code>{key}</code>)</label>
+          <input type="text" id="svitlobot_url" name="svitlobot_url">
+          <div class="hint">Змінюйте лише якщо Світлобот змінив адресу API.</div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Об'єкт перевірки</legend>
+        <div class="row">
+          <div>
+            <label for="target_host">Зовнішній IP або домен</label>
+            <input type="text" id="target_host" name="target_host" placeholder="наприклад, 93.170.1.2 або home.example.com">
+            <div class="hint">Публічна адреса вашого роутера (підходить і DDNS).</div>
+          </div>
+          <div>
+            <label for="esp_port">Порт ESP32 (зовнішній)</label>
+            <input type="number" id="esp_port" name="esp_port" min="1" max="65535">
+            <div class="hint">Порт, проброшений на роутері до ESP32.</div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <div>
+            <label for="esp_path">Шлях сторінки</label>
+            <input type="text" id="esp_path" name="esp_path">
+          </div>
+          <div>
+            <label for="esp_key">Ключ доступу ESP32</label>
+            <div class="secret">
+              <input type="password" id="esp_key" name="esp_key" data-secret>
+              <button type="button" data-clear="esp_key" title="Очистити">✕</button>
+            </div>
+            <div class="hint">Той самий, що передавали через <code>--key</code>.</div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <div>
+            <label for="reachability_method">Перевірка доступності IP</label>
+            <select id="reachability_method" name="reachability_method">
+              <option value="icmp">ICMP-пінг</option>
+              <option value="tcp">TCP-з'єднання</option>
+            </select>
+            <div class="hint">TCP — якщо роутер не відповідає на пінг.</div>
+          </div>
+          <div>
+            <label for="tcp_port">TCP-порт роутера</label>
+            <input type="number" id="tcp_port" name="tcp_port" min="1" max="65535">
+            <div class="hint">Будь-який порт, що відповідає, коли світла немає (не порт ESP32).</div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <div>
+            <label for="check_interval">Інтервал перевірок, с</label>
+            <input type="number" id="check_interval" name="check_interval" min="5" max="600">
+          </div>
+          <div>
+            <label for="confirm_count">Підтверджень для зміни стану</label>
+            <input type="number" id="confirm_count" name="confirm_count" min="1" max="20">
+            <div class="hint">Стільки перевірок поспіль мають дати однаковий результат.</div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <div>
+            <label for="http_timeout">Тайм-аут HTTP, с</label>
+            <input type="number" id="http_timeout" name="http_timeout" min="1" max="30" step="0.5">
+          </div>
+          <div>
+            <label for="ping_timeout">Тайм-аут пінгу, с</label>
+            <input type="number" id="ping_timeout" name="ping_timeout" min="1" max="30" step="0.5">
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <label for="unknown_policy">Коли стан невідомий (немає інтернету)</label>
+          <select id="unknown_policy" name="unknown_policy">
+            <option value="keep_last">Зберігати останній відомий стан (рекомендовано)</option>
+            <option value="assume_on">Вважати, що світло є (продовжувати пінги)</option>
+            <option value="stop">Зупинити пінги (Світлобот покаже відключення)</option>
+          </select>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Telegram (необов'язково)</legend>
+        <label class="check"><input type="checkbox" name="tg_enabled"> Повідомляти канал про втрату та відновлення інтернету</label>
+        <label class="check"><input type="checkbox" name="tg_silent"> Тихі повідомлення (без звуку)</label>
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label for="tg_bot_token">Токен бота</label>
+            <div class="secret">
+              <input type="password" id="tg_bot_token" name="tg_bot_token" data-secret>
+              <button type="button" data-clear="tg_bot_token" title="Очистити">✕</button>
+            </div>
+            <div class="hint">Від @BotFather. Бот має бути адміністратором каналу.</div>
+          </div>
+          <div>
+            <label for="tg_chat_id">ID каналу</label>
+            <input type="text" id="tg_chat_id" name="tg_chat_id" placeholder="-1001234567890 або @mychannel">
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <label for="tg_text_lost">Текст при втраті зв'язку</label>
+          <textarea id="tg_text_lost" name="tg_text_lost"></textarea>
+        </div>
+        <div style="margin-top:14px">
+          <label for="tg_text_restored">Текст при відновленні</label>
+          <textarea id="tg_text_restored" name="tg_text_restored"></textarea>
+          <div class="hint">Змінні: <code>{status}</code> — поточний стан, <code>{last_status}</code> — останній відомий,
+            <code>{duration}</code> — тривалість без зв'язку, <code>{time}</code> — час події (ГГ:ХХ),
+            <code>{date}</code> — дата.</div>
+        </div>
+        <div class="actions" style="margin-top:14px">
+          <button type="button" id="tg-test">Надіслати тестове повідомлення</button>
+          <span class="msg" id="tg-test-msg"></span>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="save">Зберегти</button>
+        <button type="button" id="reset-all">Скинути всі зміни панелі</button>
+        <span class="msg" id="save-msg"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Журнал подій</h2>
+    <ul class="events" id="events"><li class="muted">Подій ще немає</li></ul>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const form = $("cfg");
+const clearedSecrets = new Set();
+
+async function api(path, options = {}) {
+  // location.origin не містить логіна/пароля, навіть якщо сторінку відкрито як http://user:pass@host/
+  const resp = await fetch(new URL(path, location.origin), {
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    ...options,
+  });
+  let data = null;
+  try { data = await resp.json(); } catch (_) {}
+  if (!resp.ok && !(data && data.error)) throw new Error("Помилка сервера (" + resp.status + ")");
+  return data;
+}
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function fmtCheck(res) {
+  if (!res) return '<span class="muted">ще не перевірялось</span>';
+  const cls = res.ok ? "ok" : "bad";
+  const lat = res.latency_ms != null ? ` · ${res.latency_ms} мс` : "";
+  return `<span class="${cls}">${res.ok ? "✔" : "✖"} ${escapeHtml(res.detail)}</span><span class="muted">${lat}</span>`;
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const STATE_TITLES = { on: "Світло є", off: "Світла немає", unknown: "Невідомо — немає зв'язку" };
+
+function renderStatus(s) {
+  $("version").textContent = "версія " + s.version;
+  $("setup-banner").hidden = s.configured;
+  $("dot").className = "dot " + (s.state || "");
+  $("state-label").textContent = s.state ? STATE_TITLES[s.state] : (s.configured ? "Визначається…" : "Не налаштовано");
+
+  let since = s.state_since ? "з " + fmtTime(s.state_since) : "";
+  if (s.pending.state && s.pending.state !== s.state) {
+    since += (since ? " · " : "") + `перевіряється зміна на «${STATE_TITLES[s.pending.state]}» (${s.pending.count}/${s.pending.needed})`;
+  }
+  if (s.state === "unknown" && s.last_known_power) {
+    since += (since ? " · " : "") + "останній відомий стан: " + STATE_TITLES[s.last_known_power].toLowerCase();
+  }
+  $("state-since").textContent = since;
+
+  $("http-res").innerHTML = fmtCheck(s.last_check.http);
+  $("reach-title").textContent = s.last_check.reach_method === "tcp" ? "TCP-доступність IP" : "Пінг IP";
+  $("reach-res").innerHTML = fmtCheck(s.last_check.reach);
+  $("last-check").textContent = s.last_check.time ? "Остання перевірка: " + fmtTime(s.last_check.time) : "";
+
+  const svb = s.svitlobot;
+  let svbHtml;
+  if (!svb.enabled) svbHtml = '<span class="muted">вимкнено або не задано ключ</span>';
+  else if (!svb.active) svbHtml = '<span class="warn">пінги призупинено</span>';
+  else svbHtml = '<span class="ok">пінги надсилаються</span>';
+  if (svb.last_time) {
+    const cls = svb.last_ok ? "muted" : "bad";
+    svbHtml += `<div class="${cls}" style="font-weight:400;font-size:13px">останній: ${fmtTime(svb.last_time)} · ${escapeHtml(svb.last_detail)}</div>`;
+  }
+  $("svb-res").innerHTML = svbHtml;
+
+  const tg = s.telegram;
+  $("tg-res").innerHTML = tg.ready
+    ? (tg.outage_notified ? '<span class="warn">надіслано повідомлення про втрату зв\'язку</span>' : '<span class="ok">готово</span>')
+    : '<span class="muted">вимкнено</span>';
+
+  const list = $("events");
+  if (!s.events.length) {
+    list.innerHTML = '<li class="muted">Подій ще немає</li>';
+  } else {
+    list.innerHTML = s.events.map((e) =>
+      `<li><time>${fmtTime(e.time)}</time><span class="${e.level}">${escapeHtml(e.text)}</span></li>`).join("");
+  }
+}
+
+async function refreshStatus() {
+  try { renderStatus(await api("/api/status")); } catch (e) { $("state-label").textContent = e.message; }
+}
+
+const SOURCE_NAMES = { env: ".env", override: "панель ↺" };
+
+function labelFor(el) {
+  return el.type === "checkbox" ? el.closest("label") : form.querySelector(`label[for="${el.name}"]`);
+}
+
+function fillForm(cfg) {
+  const sources = cfg._sources || {};
+  const envKeys = cfg._env_keys || {};
+  form.querySelectorAll(".src").forEach((b) => b.remove());
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in cfg)) continue;
+    const src = sources[el.name];
+    if (el.type === "checkbox") el.checked = !!cfg[el.name];
+    else if (el.hasAttribute("data-secret")) {
+      el.value = "";
+      const where = src === "override" ? "задано в панелі" : src === "env" ? "задано в .env" : "задано";
+      el.placeholder = cfg[el.name + "_set"] ? `${where} — залиште порожнім, щоб не змінювати` : "не задано";
+    } else el.value = cfg[el.name];
+
+    const label = labelFor(el);
+    if (label && SOURCE_NAMES[src]) {
+      const badge = document.createElement("span");
+      badge.className = "src " + src;
+      badge.textContent = SOURCE_NAMES[src];
+      badge.title = (envKeys[el.name] ? envKeys[el.name] + ": " : "") +
+        (src === "override" ? "змінено в панелі (.env.override). Натисніть, щоб повернути значення з .env" : "значення з .env");
+      if (src === "override") {
+        badge.addEventListener("click", (ev) => { ev.preventDefault(); resetFields([el.name]); });
+      }
+      label.appendChild(badge);
+    }
+  }
+  clearedSecrets.clear();
+}
+
+async function resetFields(fields) {
+  try {
+    const res = await api("/api/config/reset", { method: "POST", body: JSON.stringify(fields ? { fields } : {}) });
+    fillForm(res.config);
+    showMsg("save-msg", fields ? "Повернуто значення з .env" : "Усі зміни панелі скинуто", true);
+    setTimeout(refreshStatus, 1500);
+  } catch (e) { showMsg("save-msg", e.message, false); }
+}
+
+$("reset-all").addEventListener("click", () => {
+  if (confirm("Скинути всі зміни, зроблені в панелі? Будуть діяти значення з .env.")) resetFields(null);
+});
+
+const DIAG_ICONS = { ok: "✔", error: "✖", warn: "⚠", skip: "•" };
+
+function renderDiag(items) {
+  const list = $("diag");
+  list.hidden = false;
+  list.innerHTML = "";
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="i-${it.level}">${DIAG_ICONS[it.level] || "•"}</span>
+      <div><div class="t">${escapeHtml(it.title)}</div><div class="d">${escapeHtml(it.detail)}</div></div><span></span>`;
+    if (it.action) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = it.action === "svitlobot" ? "Надіслати пінг" : "Тестове повідомлення";
+      btn.addEventListener("click", async () => {
+        if (it.action === "svitlobot" && !confirm("Пінг позначить у Світлоботі, що світло є. Продовжити?")) return;
+        btn.disabled = true;
+        try {
+          const res = await api(it.action === "svitlobot" ? "/api/test/svitlobot" : "/api/test/telegram", { method: "POST" });
+          li.querySelector(".d").textContent = res.ok ? "Надіслано: " + res.detail : res.detail;
+          li.firstElementChild.className = "i-" + (res.ok ? "ok" : "error");
+          li.firstElementChild.textContent = res.ok ? "✔" : "✖";
+        } catch (e) { li.querySelector(".d").textContent = e.message; }
+        btn.disabled = false;
+      });
+      li.lastElementChild.appendChild(btn);
+    }
+    list.appendChild(li);
+  }
+  const errors = items.filter((i) => i.level === "error").length;
+  const warns = items.filter((i) => i.level === "warn").length;
+  showMsg("diag-msg", errors ? `Помилок: ${errors}` : warns ? `Усе працює, попереджень: ${warns}` : "Усе налаштовано правильно", !errors);
+}
+
+$("diag-run").addEventListener("click", async () => {
+  const btn = $("diag-run");
+  btn.disabled = true;
+  $("diag-msg").className = "muted msg";
+  $("diag-msg").textContent = "Перевірка…";
+  try { renderDiag((await api("/api/diagnostics", { method: "POST" })).items); }
+  catch (e) { showMsg("diag-msg", e.message, false); }
+  btn.disabled = false;
+});
+
+function collectForm() {
+  const data = {};
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    if (el.type === "checkbox") data[el.name] = el.checked;
+    else if (el.type === "number") data[el.name] = el.value === "" ? null : Number(el.value);
+    else data[el.name] = el.value;
+  }
+  for (const name of clearedSecrets) if (!data[name]) data[name] = null;
+  return data;
+}
+
+function showMsg(id, text, ok) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = "msg " + (ok ? "ok" : "bad");
+}
+
+form.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("save").disabled = true;
+  try {
+    const res = await api("/api/config", { method: "PUT", body: JSON.stringify(collectForm()) });
+    if (res.ok) { fillForm(res.config); showMsg("save-msg", "Збережено", true); setTimeout(refreshStatus, 1500); }
+    else showMsg("save-msg", res.error, false);
+  } catch (e) { showMsg("save-msg", e.message, false); }
+  $("save").disabled = false;
+});
+
+document.querySelectorAll("[data-clear]").forEach((btn) => btn.addEventListener("click", () => {
+  const name = btn.dataset.clear;
+  const input = $(name);
+  input.value = "";
+  input.placeholder = "буде очищено після збереження";
+  clearedSecrets.add(name);
+}));
+
+$("check-now").addEventListener("click", async () => {
+  const btn = $("check-now");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/check-now", { method: "POST" });
+    if (res.ok) renderStatus(res.status); else $("last-check").textContent = res.error;
+  } catch (e) { $("last-check").textContent = e.message; }
+  btn.disabled = false;
+});
+
+$("tg-test").addEventListener("click", async () => {
+  const btn = $("tg-test");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/test/telegram", { method: "POST" });
+    showMsg("tg-test-msg", res.ok ? "Надіслано" : res.detail, res.ok);
+  } catch (e) { showMsg("tg-test-msg", e.message, false); }
+  btn.disabled = false;
+});
+
+(async () => {
+  try { fillForm(await api("/api/config")); } catch (e) { showMsg("save-msg", e.message, false); }
+  await refreshStatus();
+  setInterval(refreshStatus, 5000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+# Збирання прошивки та CLI-утиліти для macOS, Windows і Linux.
+# Запускається вручну або при створенні тегу v*. Для тегу створюється реліз з файлами.
+name: Збирання та реліз
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  firmware:
+    name: Прошивка ESP32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Встановлення PlatformIO та esptool
+        run: pip install platformio "esptool>=4.7,<5"
+      - name: Збирання образу
+        run: python cli/scripts/build_firmware.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: cli/svitlo_flasher/firmware/svitlobot-esp32.bin
+
+  cli:
+    name: CLI для ${{ matrix.name }}
+    needs: firmware
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux-x64, sep: ":" }
+          - { os: windows-latest, name: windows-x64, sep: ";" }
+          - { os: macos-latest, name: macos-arm64, sep: ":" }
+          - { os: macos-13, name: macos-x64, sep: ":" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: cli/svitlo_flasher/firmware
+      - name: Встановлення залежностей
+        working-directory: cli
+        run: pip install . pyinstaller
+      - name: Збирання виконуваного файлу
+        working-directory: cli
+        shell: bash
+        run: >
+          pyinstaller --onefile --name svitlo-flasher-${{ matrix.name }}
+          --collect-data esptool
+          --add-data "svitlo_flasher/firmware/svitlobot-esp32.bin${{ matrix.sep }}svitlo_flasher/firmware"
+          entry.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.name }}
+          path: cli/dist/*
+
+  release:
+    name: Реліз
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware, cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
